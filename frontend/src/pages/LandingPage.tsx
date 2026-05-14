@@ -439,8 +439,8 @@ export function LandingPage() {
   return (
     <main className="min-h-screen bg-life-grid bg-[size:44px_44px]">
       <section className="page-wrap py-6 sm:py-8">
-        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
-          <Card className="!p-0 overflow-hidden">
+        <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
+          <Card className="!p-0 h-full overflow-hidden">
             <div className="relative p-5 sm:p-6">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(45,212,191,0.16),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(96,165,250,0.13),transparent_30%)]" />
               <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -473,23 +473,18 @@ export function LandingPage() {
             </div>
           </Card>
 
-          <Card className="!p-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
+          <Card className="!p-5 h-full">
+            <div className="flex h-full items-center justify-between gap-5">
+              <div className="min-w-0">
                 <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Profile completeness</p>
                 <h2 className="mt-2 text-xl font-semibold text-white">Intake progress</h2>
+                <p className="mt-3 text-4xl font-extrabold leading-none text-white">{completion}%</p>
+                <p className="mt-4 max-w-xs text-sm leading-6 text-slate-300">
+                  Start with what you know. Import wearable or report data whenever it is ready.
+                </p>
               </div>
-              <p className="text-4xl font-extrabold leading-none text-white">{completion}%</p>
+              <HumanProgress value={completion} />
             </div>
-            <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-white/10">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 transition-[width] duration-500"
-                style={{ width: `${completion}%` }}
-              />
-            </div>
-            <p className="mt-4 text-sm leading-6 text-slate-300">
-              Start with what you know. Import wearable or report data whenever it is ready.
-            </p>
           </Card>
         </div>
 
@@ -633,6 +628,54 @@ function SummaryChip({ icon, label, value }: { icon: React.ReactNode; label: str
       <div className="min-w-0">
         <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
         <p className="truncate text-sm font-semibold text-white">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function HumanProgress({ value }: { value: number }) {
+  const boundedValue = Math.max(0, Math.min(100, value));
+  const fill = `${boundedValue}%`;
+  const fillY = 116 - boundedValue * 1.08;
+
+  return (
+    <div
+      className="relative h-32 w-24 shrink-0 rounded-3xl border border-cyan-300/15 bg-black/20 p-2 shadow-inner shadow-black/30"
+      aria-label={`Profile completeness ${value}%`}
+    >
+      <svg className="h-full w-full overflow-visible" viewBox="0 0 96 128" role="img" aria-hidden="true">
+        <defs>
+          <linearGradient id="humanProgressFill" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="#a5f3fc" />
+            <stop offset="50%" stopColor="#5eead4" />
+            <stop offset="100%" stopColor="#60a5fa" />
+          </linearGradient>
+          <clipPath id="humanProgressShape">
+            <circle cx="48" cy="19" r="12" />
+            <path d="M31 44c2-10 10-16 17-16s15 6 17 16l-4 31c-1 7-6 12-13 12s-12-5-13-12l-4-31Z" />
+            <path d="M19 45c0-6 4-10 9-10 4 0 7 3 8 7l4 31c1 5-2 9-7 10-4 1-8-2-9-7l-5-31Z" />
+            <path d="M77 45c0-6-4-10-9-10-4 0-7 3-8 7l-4 31c-1 5 2 9 7 10 4 1 8-2 9-7l5-31Z" />
+            <path d="M36 82h11v34c0 5-3 8-8 8s-8-3-8-8l5-34Z" />
+            <path d="M49 82h11l5 34c0 5-3 8-8 8s-8-3-8-8V82Z" />
+          </clipPath>
+        </defs>
+        <rect x="10" y="6" width="76" height="112" rx="28" fill="none" stroke="rgba(148, 163, 184, 0.12)" />
+        <g clipPath="url(#humanProgressShape)">
+          <rect x="12" y="4" width="72" height="120" fill="rgba(255,255,255,0.12)" />
+          <rect x="12" y={fillY} width="72" height={116 - fillY} fill="url(#humanProgressFill)" />
+        </g>
+        <g fill="none" stroke="rgba(226, 232, 240, 0.18)" strokeWidth="1.5">
+          <circle cx="48" cy="19" r="12" />
+          <path d="M31 44c2-10 10-16 17-16s15 6 17 16l-4 31c-1 7-6 12-13 12s-12-5-13-12l-4-31Z" />
+          <path d="M19 45c0-6 4-10 9-10 4 0 7 3 8 7l4 31c1 5-2 9-7 10-4 1-8-2-9-7l-5-31Z" />
+          <path d="M77 45c0-6-4-10-9-10-4 0-7 3-8 7l-4 31c-1 5 2 9 7 10 4 1 8-2 9-7l5-31Z" />
+          <path d="M36 82h11v34c0 5-3 8-8 8s-8-3-8-8l5-34Z" />
+          <path d="M49 82h11l5 34c0 5-3 8-8 8s-8-3-8-8V82Z" />
+        </g>
+        <path d="M19 118h58" stroke="rgba(148, 163, 184, 0.28)" strokeWidth="4" strokeLinecap="round" />
+      </svg>
+      <div className="absolute bottom-2 left-3 right-3 h-1 overflow-hidden rounded-full bg-white/10">
+        <div className="h-full rounded-full bg-gradient-to-r from-emerald-300 to-blue-400" style={{ width: fill }} />
       </div>
     </div>
   );
