@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
@@ -37,9 +38,14 @@ storage_service = HealthDataStorageService()
 daily_summary_service = HealthDailySummaryService()
 ai_twin_profile_service = HealthAiTwinProfileService()
 query_service = HealthQueryService()
+DEFAULT_SAMSUNG_ZIP_PATH = Path(r"C:\Users\dhanu\Downloads\Data.zip")
 
 
-async def _read_zip_upload(file: UploadFile) -> bytes:
+async def _read_zip_upload(file: UploadFile | None) -> bytes:
+    if file is None:
+        if not DEFAULT_SAMSUNG_ZIP_PATH.exists():
+            raise HTTPException(status_code=400, detail="Invalid Samsung Health export ZIP")
+        return DEFAULT_SAMSUNG_ZIP_PATH.read_bytes()
     filename = file.filename or ""
     if not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Invalid Samsung Health export ZIP")
@@ -52,7 +58,7 @@ async def _read_zip_upload(file: UploadFile) -> bytes:
     response_model_exclude_none=True,
 )
 async def upload_samsung_health_export(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
     user_id: UUID = Query(...),
     include_raw_records: bool = Query(default=False),
     include_samples: bool = Query(default=False),
@@ -76,7 +82,7 @@ async def upload_samsung_health_export(
             db,
             user_id,
             storage_parse,
-            original_filename=file.filename or "samsung_health_export.zip",
+            original_filename=(file.filename if file else DEFAULT_SAMSUNG_ZIP_PATH.name) or "samsung_health_export.zip",
             zip_bytes=zip_bytes,
             force_reprocess=force_reprocess,
         )
@@ -111,7 +117,7 @@ async def upload_samsung_health_export(
     response_model_exclude_none=True,
 )
 async def preview_samsung_health_export(
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(default=None),
     include_debug_files: bool = Query(default=False),
 ) -> SamsungHealthPreviewResponse:
     zip_bytes = await _read_zip_upload(file)

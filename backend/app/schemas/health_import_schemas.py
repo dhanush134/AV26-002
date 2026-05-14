@@ -447,7 +447,7 @@ class DeviceCapability(BaseModel):
     wearable_message: Any = None
     wearable_health_version: str | None = None
     receiver: Any = None
-    device_type: str | None = None
+    device_type: str | int | None = None
     config: Any = None
     raw_extra: JsonDict | None = None
 

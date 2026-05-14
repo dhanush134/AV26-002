@@ -17,6 +17,8 @@ import { Button } from "../components/ui/Button";
 import { Card } from "../components/ui/Card";
 
 const STORAGE_KEY = "lifetwin_intake_draft_v1";
+const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type GeneticTrack = "nutrigenomics" | "fitnessGenetics" | "sleepRecoveryGenetics" | "stimulantProcessingGenetics";
 
@@ -59,6 +61,68 @@ type ExtractedField = {
   label: string;
   value: string;
   confidence: "High" | "Medium";
+};
+
+type SamsungDailyHealth = {
+  steps?: number | null;
+  active_time_seconds?: number | null;
+  exercise_time_seconds?: number | null;
+  avg_heart_rate?: number | null;
+  stress_avg_score?: number | null;
+  sleep_minutes?: number | null;
+};
+
+type SamsungBodyMeasurement = {
+  type?: string;
+  start_time?: string | null;
+  height_cm?: number | null;
+  weight_kg?: number | null;
+  body_fat_percent?: number | null;
+  skeletal_muscle_mass?: number | null;
+  muscle_mass?: number | null;
+  vfa_level?: number | null;
+};
+
+type SamsungUploadResponse = {
+  ai_twin_readiness?: {
+    score?: number;
+    level?: string;
+  };
+  storage?: {
+    status?: string;
+    already_imported?: boolean;
+    saved_counts?: Record<string, number>;
+    daily_summaries_updated?: number;
+  };
+  heart_rate?: {
+    summary?: {
+      avg_bpm?: number | null;
+    };
+  };
+  steps?: {
+    summary?: {
+      total_steps_detected?: number | null;
+    };
+  };
+  stress?: {
+    summary?: {
+      avg_score?: number | null;
+    };
+  };
+  activity?: {
+    day_summaries?: Array<{
+      score?: number | null;
+      active_time?: number | null;
+      exercise_time?: number | null;
+    }>;
+  };
+  sleep?: {
+    detected?: boolean;
+  };
+  body_profile?: {
+    measurements?: SamsungBodyMeasurement[];
+  };
+  daily_health?: SamsungDailyHealth[];
 };
 
 const defaultForm: IntakeForm = {
@@ -233,10 +297,35 @@ function applyExtractedFields(current: IntakeForm, fields: ExtractedField[]) {
   return next;
 }
 
+function formatNumber(value: number | null | undefined, digits = 0) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return digits > 0 ? value.toFixed(digits) : String(Math.round(value));
+}
+
+function latestDailyHealth(days: SamsungDailyHealth[] | undefined) {
+  return days?.length ? days[days.length - 1] : undefined;
+}
+
+function latestMeasurement(measurements: SamsungBodyMeasurement[] | undefined, predicate: (item: SamsungBodyMeasurement) => boolean) {
+  return measurements?.filter(predicate).sort((a, b) => String(b.start_time || "").localeCompare(String(a.start_time || "")))[0];
+}
+
+function bodyCompositionText(measurement: SamsungBodyMeasurement | undefined) {
+  if (!measurement) return "";
+  const parts = [
+    typeof measurement.body_fat_percent === "number" ? `Body fat ${formatNumber(measurement.body_fat_percent, 1)}%` : "",
+    typeof measurement.skeletal_muscle_mass === "number" ? `Skeletal muscle ${formatNumber(measurement.skeletal_muscle_mass, 1)} kg` : "",
+    typeof measurement.muscle_mass === "number" ? `Muscle mass ${formatNumber(measurement.muscle_mass, 1)} kg` : "",
+    typeof measurement.vfa_level === "number" ? `VFA ${formatNumber(measurement.vfa_level)}` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+
 export function LandingPage() {
   const navigate = useNavigate();
   const [form, setForm] = useState<IntakeForm>(defaultForm);
   const [wearableMessage, setWearableMessage] = useState("");
+  const [wearableLoading, setWearableLoading] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
   const [saveMessage, setSaveMessage] = useState("");
   const [reportName, setReportName] = useState("");
@@ -265,30 +354,102 @@ export function LandingPage() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName, geneticUploads }));
   }, [form, reportName, geneticUploads]);
 
-  const completion = Math.round(
-    (manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length / manualFieldCount.length) * 100,
-  );
+  const filledManualFields = manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length;
+  const completion = Math.round((filledManualFields / manualFieldCount.length) * 100);
 
   const updateField = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
     setSaveMessage("");
   };
 
-  const connectWearable = () => {
-    setForm((current) => ({
-      ...current,
-      height: current.height || "172",
-      weight: current.weight || "74",
-      bodyComposition: current.bodyComposition || "Body fat 18% | Muscle mass 31 kg | BMI 25.0",
-      pulseRate: current.pulseRate || "64",
-      stress: current.stress || "28",
-      activity: current.activity || "82",
-      exercise: current.exercise || "46",
-      dailySteps: current.dailySteps || "9620",
-      sleepHours: current.sleepHours || "7.4",
-    }));
-    setWearableMessage("Wearable sync filled pulse rate, stress, activity, exercise, daily steps, sleep hours, and body profile metrics such as height, weight, and body composition. Manual lab markers were left untouched.");
+  const getOrCreateIntakeUser = async (current: IntakeForm) => {
+    const existingUserId = localStorage.getItem(USER_STORAGE_KEY);
+    if (existingUserId) return existingUserId;
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        full_name: current.fullName.trim() || "Samsung Health User",
+        age: Number(current.currentAge) || 34,
+        gender: null,
+        height_cm: Number(current.height) || 170,
+        weight_kg: Number(current.weight) || 70,
+        target_age: Number(current.targetTwinAge) || 75,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error("Could not create a user for the wearable import.");
+    }
+    const user = (await response.json()) as { id: string };
+    localStorage.setItem(USER_STORAGE_KEY, user.id);
+    return user.id;
+  };
+
+  const connectWearable = async () => {
+    setWearableLoading(true);
+    setWearableMessage("Reading C:\\Users\\dhanu\\Downloads\\Data.zip through the backend and syncing Samsung Health data...");
     setSaveMessage("");
+    try {
+      const userId = await getOrCreateIntakeUser(form);
+      const params = new URLSearchParams({
+        user_id: userId,
+        include_raw_records: "true",
+        include_samples: "false",
+        sample_limit: "1000",
+      });
+      const response = await fetch(`${API_BASE_URL}/api/health-imports/samsung/upload?${params.toString()}`, {
+        method: "POST",
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Samsung Health import failed.");
+      }
+      const payload = (await response.json()) as SamsungUploadResponse;
+      const latestDay = latestDailyHealth(payload.daily_health);
+      const heightMeasurement = latestMeasurement(payload.body_profile?.measurements, (item) => typeof item.height_cm === "number");
+      const weightMeasurement = latestMeasurement(payload.body_profile?.measurements, (item) => typeof item.weight_kg === "number");
+      const compositionMeasurement = latestMeasurement(
+        payload.body_profile?.measurements,
+        (item) =>
+          typeof item.body_fat_percent === "number" ||
+          typeof item.skeletal_muscle_mass === "number" ||
+          typeof item.muscle_mass === "number" ||
+          typeof item.vfa_level === "number",
+      );
+      const activitySummary = payload.activity?.day_summaries?.[payload.activity.day_summaries.length - 1];
+      const nextFields: Partial<IntakeForm> = {
+        height: formatNumber(heightMeasurement?.height_cm ?? weightMeasurement?.height_cm, 1),
+        weight: formatNumber(weightMeasurement?.weight_kg, 1),
+        bodyComposition: bodyCompositionText(compositionMeasurement || weightMeasurement),
+        pulseRate: formatNumber(latestDay?.avg_heart_rate ?? payload.heart_rate?.summary?.avg_bpm),
+        stress: formatNumber(latestDay?.stress_avg_score ?? payload.stress?.summary?.avg_score),
+        activity: formatNumber(activitySummary?.score),
+        exercise: formatNumber(((latestDay?.exercise_time_seconds ?? activitySummary?.exercise_time ?? 0) || 0) / 60),
+        dailySteps: formatNumber(latestDay?.steps ?? payload.steps?.summary?.total_steps_detected),
+        sleepHours: formatNumber(typeof latestDay?.sleep_minutes === "number" ? latestDay.sleep_minutes / 60 : null, 1),
+      };
+      setForm((current) => {
+        const next = { ...current };
+        (Object.entries(nextFields) as Array<[keyof IntakeForm, string]>).forEach(([key, value]) => {
+          if (value) next[key] = value as never;
+        });
+        return next;
+      });
+
+      const savedCounts = payload.storage?.saved_counts || {};
+      const savedTotal = Object.values(savedCounts).reduce((sum, count) => sum + count, 0);
+      const storageText = payload.storage?.already_imported
+        ? "This ZIP was already imported, so existing stored records were reused."
+        : `Stored ${savedTotal} normalized records and updated ${payload.storage?.daily_summaries_updated || 0} daily summaries.`;
+      setWearableMessage(
+        `${storageText} Manual intake was filled from Samsung Health fields: pulse, stress, activity, exercise, steps, sleep if available, height, weight, and body composition.`,
+      );
+    } catch (error) {
+      setWearableMessage(error instanceof Error ? error.message : "Samsung Health wearable sync failed.");
+    } finally {
+      setWearableLoading(false);
+    }
   };
 
   const handleReportUpload = async (file: File | undefined) => {
@@ -325,61 +486,70 @@ export function LandingPage() {
 
   return (
     <main className="min-h-screen bg-life-grid bg-[size:44px_44px]">
-      <section className="page-wrap py-8 sm:py-10">
-        <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
-          <Card className="overflow-hidden p-0">
-            <div className="relative p-6 sm:p-8">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(45,212,191,0.18),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(96,165,250,0.16),transparent_30%)]" />
-              <div className="relative">
-                <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1 text-sm font-semibold text-emerald-100">
-                  <Sparkles size={16} />
-                  Ideal Twin Intake
-                </div>
-                <div className="flex items-start gap-4">
-                  <div className="grid h-14 w-14 shrink-0 place-items-center rounded-3xl bg-gradient-to-br from-emerald-300 to-blue-400 text-slate-950 shadow-glow">
-                    <ActivitySquare size={28} />
+      <section className="page-wrap py-6 sm:py-8">
+        <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
+          <Card className="!p-0 overflow-hidden">
+            <div className="relative p-5 sm:p-6">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(45,212,191,0.16),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(96,165,250,0.13),transparent_30%)]" />
+              <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                <div className="max-w-3xl">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-emerald-100">
+                    <Sparkles size={14} />
+                    Ideal Twin Intake
                   </div>
-                  <div>
-                    <h1 className="max-w-4xl text-4xl font-extrabold leading-tight text-white sm:text-6xl">
-                      Build the most accurate version of your future twin.
-                    </h1>
-                    <p className="mt-4 max-w-3xl text-base leading-8 text-slate-300 sm:text-lg">
-                      Tell LifeTwin everything you can about your current health, labs, wearable trends, and genetics.
-                      The more data you give us, the more accurate your idealistic twin becomes.
-                    </p>
+                  <div className="mt-4 flex items-start gap-3 sm:gap-4">
+                    <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-emerald-300 to-blue-400 text-slate-950 shadow-glow sm:h-12 sm:w-12">
+                      <ActivitySquare size={24} />
+                    </div>
+                    <div>
+                      <h1 className="max-w-3xl text-2xl font-extrabold leading-tight text-white sm:text-4xl">
+                        Build your ideal future twin.
+                      </h1>
+                      <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
+                        Add current health, labs, wearable trends, and genetics so LifeTwin can model a sharper future version of you.
+                      </p>
+                    </div>
                   </div>
                 </div>
 
-                <div className="mt-8 grid gap-4 md:grid-cols-3">
-                  <InsightStat icon={<HeartPulse size={20} className="text-rose-200" />} label="Biomarkers" value="20+" copy="Vitals, labs, hormones, organ markers, and wearable profile data in one place." />
-                  <InsightStat icon={<Watch size={20} className="text-cyan-200" />} label="Auto-filled" value="Wearables" copy="Only wearable-available signals are synced automatically." />
-                  <InsightStat icon={<BrainCircuit size={20} className="text-emerald-200" />} label="AI intake" value="Reports" copy="Upload lab reports and confirm what the parser recognized." />
+                <div className="hidden gap-2 sm:grid sm:grid-cols-3 lg:min-w-72 lg:grid-cols-1">
+                  <SummaryChip icon={<HeartPulse size={17} className="text-rose-200" />} label="Biomarkers" value="20+" />
+                  <SummaryChip icon={<Watch size={17} className="text-cyan-200" />} label="Wearables" value="Auto-fill" />
+                  <SummaryChip icon={<BrainCircuit size={17} className="text-emerald-200" />} label="Reports" value="AI assisted" />
                 </div>
               </div>
             </div>
           </Card>
 
-          <Card className="flex h-full flex-col justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.24em] text-slate-500">Profile completeness</p>
-              <p className="mt-3 text-5xl font-extrabold text-white">{completion}%</p>
-              <p className="mt-3 text-sm leading-7 text-slate-300">
-                This page is intentionally self-explanatory. Enter values manually, import what your wearable can provide,
-                and let the report parser confirm anything it can recognize from uploaded files.
-              </p>
-              <div className="mt-6 h-3 overflow-hidden rounded-full bg-white/10">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 transition-[width] duration-500"
-                  style={{ width: `${completion}%` }}
-                />
+          <Card className="!p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Profile completeness</p>
+                <h2 className="mt-2 text-xl font-semibold text-white">Intake progress</h2>
+              </div>
+              <p className="text-4xl font-extrabold leading-none text-white">{completion}%</p>
+            </div>
+            <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-white/10">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-emerald-300 via-cyan-300 to-blue-400 transition-[width] duration-500"
+                style={{ width: `${completion}%` }}
+              />
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                <p className="text-slate-500">Filled</p>
+                <p className="mt-1 font-semibold text-white">
+                  {filledManualFields}/{manualFieldCount.length} fields
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                <p className="text-slate-500">Next</p>
+                <p className="mt-1 font-semibold text-white">Wearables or labs</p>
               </div>
             </div>
-            <div className="mt-8 space-y-3 text-sm text-slate-300">
-              <ChecklistRow text="Manual entry for all requested health data" />
-              <ChecklistRow text="One-click wearable autofill for supported metrics" />
-              <ChecklistRow text="Blood report upload with confirmed extracted values" />
-              <ChecklistRow text="Dedicated genetics section plus ideal target age" />
-            </div>
+            <p className="mt-4 text-sm leading-6 text-slate-300">
+              Start with what you know. Import wearable or report data whenever it is ready.
+            </p>
           </Card>
         </div>
 
@@ -430,10 +600,10 @@ export function LandingPage() {
                 are auto-filled here: stress, activity, exercise, pulse rate, daily steps, sleep hours, and body profile
                 metrics such as height, weight, and body composition.
               </p>
-              <Button className="mt-5" onClick={connectWearable}>
-                Fetch from wearables <Watch size={18} />
+              <Button className="mt-5" onClick={connectWearable} disabled={wearableLoading}>
+                {wearableLoading ? "Fetching Samsung Health..." : "Fetch from wearables"} <Watch size={18} />
               </Button>
-              {wearableMessage ? <StatusNote tone="success">{wearableMessage}</StatusNote> : null}
+              {wearableMessage ? <StatusNote tone={wearableLoading ? "info" : "success"}>{wearableMessage}</StatusNote> : null}
             </Card>
 
             <Card title="3. Upload Blood Reports and Health Files">
@@ -575,26 +745,14 @@ export function LandingPage() {
   );
 }
 
-function InsightStat({ icon, label, value, copy }: { icon: React.ReactNode; label: string; value: string; copy: string }) {
+function SummaryChip({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-black/20 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <span className="grid h-11 w-11 place-items-center rounded-2xl bg-white/10">{icon}</span>
-        <div className="text-right">
-          <p className="text-xs uppercase tracking-[0.24em] text-slate-500">{label}</p>
-          <p className="mt-1 text-xl font-bold text-white">{value}</p>
-        </div>
+    <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2.5">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-white/10">{icon}</span>
+      <div className="min-w-0">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
+        <p className="truncate text-sm font-semibold text-white">{value}</p>
       </div>
-      <p className="mt-3 text-sm leading-6 text-slate-300">{copy}</p>
-    </div>
-  );
-}
-
-function ChecklistRow({ text }: { text: string }) {
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3">
-      <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-200" />
-      <span>{text}</span>
     </div>
   );
 }

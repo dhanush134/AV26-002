@@ -94,6 +94,8 @@ def parse_samsung_csv(data: bytes, source_file: str, warnings: list[str]) -> lis
     for index, row in enumerate(rows[2:], start=3):
         if not row or not any((cell or "").strip() for cell in row):
             continue
+        if len(row) > len(headers) and not any((cell or "").strip() for cell in row[len(headers) :]):
+            row = row[: len(headers)]
         if len(row) != len(headers):
             warnings.append(
                 f"Malformed row in {source_file} at CSV row {index}: expected {len(headers)} columns, got {len(row)}"
