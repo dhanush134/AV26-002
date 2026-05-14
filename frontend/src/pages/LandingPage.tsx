@@ -4,10 +4,6 @@ import {
   ActivitySquare,
   ArrowRight,
   BrainCircuit,
-  ChevronDown,
-  ChevronUp,
-  CloudUpload,
-  FileSearch,
   HeartPulse,
   Sparkles,
   Watch,
@@ -301,7 +297,7 @@ export function LandingPage() {
   const [wearableLoading, setWearableLoading] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
   const [reportName, setReportName] = useState("");
-  const [manualExpanded, setManualExpanded] = useState(false);
+  const [bloodDetailsMessage, setBloodDetailsMessage] = useState("");
   const [extractedFields, setExtractedFields] = useState<ExtractedField[]>([]);
 
   useEffect(() => {
@@ -322,9 +318,17 @@ export function LandingPage() {
 
   const filledManualFields = manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length;
   const completion = Math.round((filledManualFields / manualFieldCount.length) * 100);
+  const hasBloodDetails = [form.hba1c, form.vitaminD, form.vitaminB12, form.bpSystolic, form.bpDiastolic].some(
+    (value) => value.trim().length > 0,
+  );
 
   const updateField = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const updateBloodDetail = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
+    updateField(key, value);
+    setBloodDetailsMessage("");
   };
 
   const getOrCreateIntakeUser = async (current: IntakeForm) => {
@@ -436,6 +440,13 @@ export function LandingPage() {
     }
   };
 
+  const submitBloodDetails = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!hasBloodDetails) return;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName }));
+    setBloodDetailsMessage("Blood details submitted and saved.");
+  };
+
   return (
     <main className="min-h-screen bg-life-grid bg-[size:44px_44px]">
       <section className="page-wrap py-6 sm:py-8">
@@ -500,120 +511,35 @@ export function LandingPage() {
             {wearableMessage ? <StatusNote tone={wearableLoading ? "info" : "success"}>{wearableMessage}</StatusNote> : null}
           </Card>
 
-          <Card
-            title="Manual Health Intake"
-            className="h-full"
-            action={
-              <Button
-                variant="secondary"
-                onClick={() => setManualExpanded((current) => !current)}
-                aria-expanded={manualExpanded}
-                aria-controls="manual-health-fields"
-                aria-label={manualExpanded ? "Hide manual health fields" : "Enter manual health intake"}
-              >
-                <span className="hidden sm:inline">{manualExpanded ? "Hide fields" : "Enter manually"}</span>
-                <span className="sm:hidden">{manualExpanded ? "Hide" : "Enter"}</span>
-                {manualExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-              </Button>
-            }
-          >
-            <p className="text-sm leading-7 text-slate-300">
-              Enter mannually if no smart watch being used
+          <Card title="Enter following details " className="h-full">
+            <p className="text-sm leading-6 text-slate-300">
+              Add key blood report values to improve your twin profile.
             </p>
-            {!manualExpanded ? (
-              <div className="mt-5 max-w-48">
-                <ManualSummary label="Manual fields" value={`${filledManualFields}/${manualFieldCount.length}`} />
-              </div>
-            ) : (
-              <div id="manual-health-fields" className="mt-5">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <FormField label="Full name" value={form.fullName} onChange={(value) => updateField("fullName", value)} placeholder="Aarav Mehta" />
-                  <FormField label="Current age" type="number" value={form.currentAge} onChange={(value) => updateField("currentAge", value)} placeholder="34" />
-                  <FormField label="Height (cm)" type="number" value={form.height} onChange={(value) => updateField("height", value)} placeholder="172" />
-                  <FormField label="Weight (kg)" type="number" value={form.weight} onChange={(value) => updateField("weight", value)} placeholder="74" />
-                  <FormField label="Body composition" value={form.bodyComposition} onChange={(value) => updateField("bodyComposition", value)} placeholder="Body fat 18% | Muscle mass 31 kg | BMI 25.0" />
-                  <FormField label="Pulse rate (bpm)" type="number" value={form.pulseRate} onChange={(value) => updateField("pulseRate", value)} placeholder="64" />
-                  <FormField label="Stress score" type="number" value={form.stress} onChange={(value) => updateField("stress", value)} placeholder="28" />
-                  <FormField label="Activity score" type="number" value={form.activity} onChange={(value) => updateField("activity", value)} placeholder="82" />
-                  <FormField label="Exercise minutes" type="number" value={form.exercise} onChange={(value) => updateField("exercise", value)} placeholder="46" />
-                  <div className="grid grid-cols-2 gap-3">
-                    <FormField label="BP systolic" type="number" value={form.bpSystolic} onChange={(value) => updateField("bpSystolic", value)} placeholder="118" />
-                    <FormField label="BP diastolic" type="number" value={form.bpDiastolic} onChange={(value) => updateField("bpDiastolic", value)} placeholder="76" />
-                  </div>
-                  <FormField label="HbA1c (%)" type="number" value={form.hba1c} onChange={(value) => updateField("hba1c", value)} placeholder="5.3" />
-                  <FormField label="Daily steps" type="number" value={form.dailySteps} onChange={(value) => updateField("dailySteps", value)} placeholder="9200" />
-                  <FormField label="Fasting blood sugar (mg/dL)" type="number" value={form.fastingBloodSugar} onChange={(value) => updateField("fastingBloodSugar", value)} placeholder="92" />
-                  <FormField label="Vitamin D (ng/mL)" type="number" value={form.vitaminD} onChange={(value) => updateField("vitaminD", value)} placeholder="34" />
-                  <FormField label="Vitamin B12 (pg/mL)" type="number" value={form.vitaminB12} onChange={(value) => updateField("vitaminB12", value)} placeholder="540" />
-                  <FormField label="Iron / Ferritin" value={form.ironFerritin} onChange={(value) => updateField("ironFerritin", value)} placeholder="Ferritin 72 ng/mL" />
-                  <FormField label="Magnesium" value={form.magnesium} onChange={(value) => updateField("magnesium", value)} placeholder="2.0 mg/dL" />
-                  <FormField label="Sleep hours" type="number" value={form.sleepHours} onChange={(value) => updateField("sleepHours", value)} placeholder="7.4" />
-                  <FormField label="TSH" value={form.tsh} onChange={(value) => updateField("tsh", value)} placeholder="2.1" />
-                  <FormField label="Cortisol" value={form.cortisol} onChange={(value) => updateField("cortisol", value)} placeholder="13.2" />
-                  <FormField label="Testosterone" value={form.testosterone} onChange={(value) => updateField("testosterone", value)} placeholder="560" />
-                </div>
-
-                <div className="mt-4 grid gap-4">
-                  <TextAreaField label="LFT" value={form.lft} onChange={(value) => updateField("lft", value)} placeholder="ALT 24 | AST 22 | Bilirubin 0.8" />
-                  <TextAreaField label="RFT" value={form.rft} onChange={(value) => updateField("rft", value)} placeholder="Creatinine 0.9 | Urea 26 | eGFR 104" />
-                  <TextAreaField label="Lipid profile" value={form.lipidProfile} onChange={(value) => updateField("lipidProfile", value)} placeholder="LDL 96 | HDL 58 | Triglycerides 110 | Total cholesterol 176" />
+            <form className="mt-4" onSubmit={submitBloodDetails}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <BloodReportField label="HbA1c" value={form.hba1c} onChange={(value) => updateBloodDetail("hba1c", value)} />
+                <BloodReportField label="Vitamin D" value={form.vitaminD} onChange={(value) => updateBloodDetail("vitaminD", value)} />
+                <BloodReportField label="Vitamin B12" value={form.vitaminB12} onChange={(value) => updateBloodDetail("vitaminB12", value)} />
+                <div className="grid grid-cols-2 gap-3">
+                  <BloodReportField label="BP systolic" value={form.bpSystolic} onChange={(value) => updateBloodDetail("bpSystolic", value)} />
+                  <BloodReportField label="BP diastolic" value={form.bpDiastolic} onChange={(value) => updateBloodDetail("bpDiastolic", value)} />
                 </div>
               </div>
-            )}
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                <Button type="submit" disabled={!hasBloodDetails}>Submit details</Button>
+                {bloodDetailsMessage ? <span className="text-sm font-medium text-emerald-100">{bloodDetailsMessage}</span> : null}
+              </div>
+            </form>
           </Card>
         </div>
 
-        <div className="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(260px,0.7fr)]">
-          <Card title="Upload Blood Report">
-            <p className="text-sm leading-6 text-slate-300">
-              Upload relevant PDF
-            </p>
-            <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-cyan-300/25 bg-cyan-300/5 px-4 py-6 text-center transition hover:bg-cyan-300/10">
-              <CloudUpload className="h-7 w-7 text-cyan-200" />
-              <span className="mt-3 text-sm font-semibold text-white">Upload relevant PDF</span>
-              <span className="mt-1 text-xs text-slate-400">PDF blood report</span>
-              <input
-                className="hidden"
-                type="file"
-                accept=".pdf"
-                onChange={(event) => handleReportUpload(event.target.files?.[0])}
-              />
-            </label>
-            {reportName ? <p className="mt-3 text-sm text-slate-400">Latest file: {reportName}</p> : null}
-            {reportMessage ? <StatusNote tone="info">{reportMessage}</StatusNote> : null}
-            {extractedFields.length ? (
-              <div className="mt-4 space-y-3">
-                <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                  <FileSearch size={16} className="text-emerald-200" />
-                  Confirmed values
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {extractedFields.map((field) => (
-                    <div key={field.key} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-semibold text-white">{field.label}</p>
-                          <p className="mt-1 text-sm text-slate-300">{field.value}</p>
-                        </div>
-                        <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-100">
-                          {field.confidence}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-          </Card>
-
-          <div className="flex justify-end xl:pt-10">
-            <div className="w-full max-w-sm rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-300/15 via-white/[0.06] to-blue-400/15 p-4 shadow-glow backdrop-blur-xl">
-              <p className="text-sm font-semibold text-white">Ready when your intake looks good</p>
-              <p className="mt-1 text-xs leading-5 text-slate-300">Continue to see your LifeTwin experience.</p>
-              <Button className="mt-4 min-h-12 w-full rounded-2xl px-5 text-base" onClick={() => navigate("/twin")}>
-                Continue to your twin <ArrowRight size={18} />
-              </Button>
-            </div>
+        <div className="mt-6 flex justify-end">
+          <div className="w-full max-w-sm rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-300/15 via-white/[0.06] to-blue-400/15 p-4 shadow-glow backdrop-blur-xl">
+            <p className="text-sm font-semibold text-white">Ready when your intake looks good</p>
+            <p className="mt-1 text-xs leading-5 text-slate-300">Continue to see your LifeTwin experience.</p>
+            <Button className="mt-4 min-h-12 w-full rounded-2xl px-5 text-base" onClick={() => navigate("/twin")}>
+              Continue to your twin <ArrowRight size={18} />
+            </Button>
           </div>
         </div>
       </section>
@@ -681,57 +607,23 @@ function HumanProgress({ value }: { value: number }) {
   );
 }
 
-function ManualSummary({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
-    </div>
-  );
-}
-
-function FormField({
+function BloodReportField({
   label,
   value,
   onChange,
-  placeholder,
-  type = "text",
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
-  placeholder?: string;
-  type?: "text" | "number";
 }) {
   return (
     <label>
       <span className="mb-2 block text-sm font-medium text-slate-300">{label}</span>
-      <input className="field" type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} />
-    </label>
-  );
-}
-
-function TextAreaField({
-  label,
-  value,
-  onChange,
-  placeholder,
-  className = "",
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-  className?: string;
-}) {
-  return (
-    <label className={className}>
-      <span className="mb-2 block text-sm font-medium text-slate-300">{label}</span>
-      <textarea
-        className="field min-h-24 resize-y"
+      <input
+        className="field"
+        type="number"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
       />
     </label>
   );
