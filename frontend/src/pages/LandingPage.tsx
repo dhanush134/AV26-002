@@ -487,26 +487,14 @@ export function LandingPage() {
                 style={{ width: `${completion}%` }}
               />
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                <p className="text-slate-500">Filled</p>
-                <p className="mt-1 font-semibold text-white">
-                  {filledManualFields}/{manualFieldCount.length} fields
-                </p>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
-                <p className="text-slate-500">Next</p>
-                <p className="mt-1 font-semibold text-white">Wearables or labs</p>
-              </div>
-            </div>
             <p className="mt-4 text-sm leading-6 text-slate-300">
               Start with what you know. Import wearable or report data whenever it is ready.
             </p>
           </Card>
         </div>
 
-        <div className="mt-6 grid items-start gap-6 xl:grid-cols-[0.85fr_1.15fr]">
-          <Card title="Auto-fill from Wearables">
+        <div className="mt-6 grid items-stretch gap-6 xl:grid-cols-[0.85fr_1.15fr]">
+          <Card title="Auto-fill from Wearables" className="h-full">
             <p className="text-sm leading-7 text-slate-300">
               Use this option to fetch details from your smart watch<br />
               Highly Recommended!
@@ -519,6 +507,7 @@ export function LandingPage() {
 
           <Card
             title="Manual Health Intake"
+            className="h-full"
             action={
               <Button
                 variant="secondary"
