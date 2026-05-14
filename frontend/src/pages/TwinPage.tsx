@@ -41,7 +41,9 @@ type BiomarkerKey =
   | "systolic"
   | "diastolic"
   | "sleepHrs"
-  | "steps";
+  | "steps"
+  | "heartRate"
+  | "stress";
 
 type Biomarkers = Record<BiomarkerKey, number>;
 
@@ -372,6 +374,19 @@ function nextDateString(value?: string) {
   return base.toISOString().slice(0, 10);
 }
 
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function higherIsBetterPercent(value: number, ideal: number) {
+  return clampPercent((value / ideal) * 100);
+}
+
+function lowerIsBetterPercent(value: number, ideal: number, max: number) {
+  if (value <= ideal) return 100;
+  return clampPercent(100 - ((value - ideal) / (max - ideal)) * 100);
+}
+
 const NEGATIVE_LABELS: Record<NegativeChoice, string> = {
   alcohol: "Alcohol",
   smoking: "Smoking",
@@ -410,8 +425,10 @@ export function TwinPage() {
     hba1c: 5.4,
     systolic: 128,
     diastolic: 82,
-    sleepHrs: 6.2,
-    steps: 4800,
+    sleepHrs: numberFromDraft(intakeForm?.sleepHours) ?? 6.2,
+    steps: numberFromDraft(intakeForm?.dailySteps) ?? 4800,
+    heartRate: numberFromDraft(intakeForm?.pulseRate) ?? 78,
+    stress: numberFromDraft(intakeForm?.stress) ?? 62,
   });
   const [routine, setRoutine] = useState<RoutineItem[]>([
     { time: "6:00 AM", activity: "10-min sunlight walk", duration: "10 min", impact: "High", done: true },
@@ -1017,33 +1034,32 @@ function MetricCard({
   label,
   value,
   unit,
-  delta,
+  percent,
   color = COLORS.accent,
 }: {
   icon: ReactNode;
   label: string;
   value: string | number;
   unit?: string;
-  delta?: number;
+  percent?: number;
   color?: string;
 }) {
   return (
     <div style={{ ...cardStyle, padding: 16, animation: "countUp 0.5s ease forwards" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div style={{ color, display: "grid", placeItems: "center" }}>{icon}</div>
-        {typeof delta === "number" ? (
+        {typeof percent === "number" ? (
           <div
             style={{
               fontSize: 10,
               fontWeight: 800,
-              color: delta > 0 ? COLORS.accent : COLORS.red,
-              background: delta > 0 ? COLORS.accentDim : COLORS.redDim,
+              color: percent >= 80 ? COLORS.accent : percent >= 55 ? COLORS.gold : COLORS.red,
+              background: percent >= 80 ? COLORS.accentDim : percent >= 55 ? COLORS.goldDim : COLORS.redDim,
               padding: "2px 8px",
               borderRadius: 99,
             }}
           >
-            {delta > 0 ? "+" : ""}
-            {delta}%
+            {percent}%
           </div>
         ) : null}
       </div>
@@ -1157,9 +1173,9 @@ function ScoreRing({ score, doneCount, total }: { score: number; doneCount: numb
   const circumference = 2 * Math.PI * r;
 
   return (
-    <div style={{ ...cardStyle, borderRadius: 20, padding: 24, textAlign: "center" }}>
+      <div style={{ ...cardStyle, borderRadius: 20, padding: 24, textAlign: "center" }}>
       <div style={{ fontSize: 11, letterSpacing: 2, color: COLORS.textMuted, textTransform: "uppercase", marginBottom: 16 }}>
-        TWIN MATCH TODAY
+        TASK COMPLETION
       </div>
       <div style={{ position: "relative", display: "inline-block" }}>
         <svg width={160} height={160} viewBox="0 0 160 160">
@@ -1186,7 +1202,7 @@ function ScoreRing({ score, doneCount, total }: { score: number; doneCount: numb
         </svg>
       </div>
       <div style={{ marginTop: 16, color: COLORS.textMuted, fontSize: 13 }}>
-        {doneCount} of {total} habits done
+        {doneCount} of {total} tasks done
       </div>
       <div style={{ marginTop: 8 }}>
         <ProgressBar value={(doneCount / total) * 100} color={COLORS.accent} height={4} />
@@ -1346,6 +1362,11 @@ function RoutineTab({
   onSubmitCheckin: () => void;
 }) {
   const negativeOptions = routinePlan?.negative_options || (Object.keys(NEGATIVE_LABELS) as NegativeChoice[]);
+  const taskCompletionScore = routine.length ? Math.round((doneCount / routine.length) * 100) : 0;
+  const sleepPercent = higherIsBetterPercent(biomarkers.sleepHrs, 8);
+  const stepsPercent = higherIsBetterPercent(biomarkers.steps, 10000);
+  const heartRatePercent = lowerIsBetterPercent(biomarkers.heartRate, 70, 110);
+  const stressPercent = lowerIsBetterPercent(biomarkers.stress, 35, 100);
   const toggleNegativeChoice = (choice: NegativeChoice) => {
     setNegativeChoices(
       negativeChoices.includes(choice)
@@ -1441,12 +1462,12 @@ function RoutineTab({
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <ScoreRing score={clampedScore} doneCount={doneCount} total={routine.length} />
+          <ScoreRing score={taskCompletionScore} doneCount={doneCount} total={routine.length} />
           <div className="lt-grid-half">
-            <MetricCard icon={<Moon size={21} />} label="Sleep" value={biomarkers.sleepHrs} unit="hrs" delta={-18} color={COLORS.purple} />
-            <MetricCard icon={<Activity size={21} />} label="Steps" value={`${(biomarkers.steps / 1000).toFixed(1)}k`} delta={-52} color={COLORS.gold} />
-            <MetricCard icon={<HeartPulse size={21} />} label="BP" value={`${biomarkers.systolic}/${biomarkers.diastolic}`} color={COLORS.red} />
-            <MetricCard icon={<TestTube2 size={21} />} label="HbA1c" value={biomarkers.hba1c} unit="%" delta={5} color={COLORS.accent} />
+            <MetricCard icon={<Moon size={21} />} label="Sleep" value={biomarkers.sleepHrs} unit="hrs" percent={sleepPercent} color={COLORS.purple} />
+            <MetricCard icon={<Activity size={21} />} label="Steps" value={`${(biomarkers.steps / 1000).toFixed(1)}k`} percent={stepsPercent} color={COLORS.gold} />
+            <MetricCard icon={<HeartPulse size={21} />} label="Heart rate" value={biomarkers.heartRate} unit="bpm" percent={heartRatePercent} color={COLORS.red} />
+            <MetricCard icon={<Zap size={21} />} label="Stress" value={biomarkers.stress} percent={stressPercent} color={COLORS.accent} />
           </div>
         </div>
       </div>
