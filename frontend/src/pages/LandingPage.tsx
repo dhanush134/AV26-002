@@ -4,6 +4,8 @@ import {
   ActivitySquare,
   ArrowRight,
   BrainCircuit,
+  ChevronDown,
+  ChevronUp,
   CheckCircle2,
   CloudUpload,
   Dna,
@@ -329,6 +331,7 @@ export function LandingPage() {
   const [reportMessage, setReportMessage] = useState("");
   const [saveMessage, setSaveMessage] = useState("");
   const [reportName, setReportName] = useState("");
+  const [manualExpanded, setManualExpanded] = useState(false);
   const [geneticUploads, setGeneticUploads] = useState<Record<GeneticTrack, string>>({
     nutrigenomics: "",
     fitnessGenetics: "",
@@ -553,60 +556,84 @@ export function LandingPage() {
           </Card>
         </div>
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-          <Card title="1. Manual Health Intake">
-            <p className="mb-5 text-sm leading-7 text-slate-300">
-              Start with manual entry. You do not need every field to continue, but each confirmed value sharpens the model.
+        <div className="mt-6 grid items-start gap-6 xl:grid-cols-[0.85fr_1.15fr]">
+          <Card title="1. Auto-fill from Wearables">
+            <p className="text-sm leading-7 text-slate-300">
+              Use this when a watch or wearable is connected. Only wearable-friendly signals are auto-filled:
+              stress, activity, exercise, pulse rate, daily steps, sleep hours, height, weight, and body composition.
             </p>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <FormField label="Full name" value={form.fullName} onChange={(value) => updateField("fullName", value)} placeholder="Aarav Mehta" />
-              <FormField label="Current age" type="number" value={form.currentAge} onChange={(value) => updateField("currentAge", value)} placeholder="34" />
-              <FormField label="Height (cm)" type="number" value={form.height} onChange={(value) => updateField("height", value)} placeholder="172" />
-              <FormField label="Weight (kg)" type="number" value={form.weight} onChange={(value) => updateField("weight", value)} placeholder="74" />
-              <FormField label="Body composition" value={form.bodyComposition} onChange={(value) => updateField("bodyComposition", value)} placeholder="Body fat 18% | Muscle mass 31 kg | BMI 25.0" />
-              <FormField label="Pulse rate (bpm)" type="number" value={form.pulseRate} onChange={(value) => updateField("pulseRate", value)} placeholder="64" />
-              <FormField label="Stress score" type="number" value={form.stress} onChange={(value) => updateField("stress", value)} placeholder="28" />
-              <FormField label="Activity score" type="number" value={form.activity} onChange={(value) => updateField("activity", value)} placeholder="82" />
-              <FormField label="Exercise minutes" type="number" value={form.exercise} onChange={(value) => updateField("exercise", value)} placeholder="46" />
-              <div className="grid grid-cols-2 gap-3">
-                <FormField label="BP systolic" type="number" value={form.bpSystolic} onChange={(value) => updateField("bpSystolic", value)} placeholder="118" />
-                <FormField label="BP diastolic" type="number" value={form.bpDiastolic} onChange={(value) => updateField("bpDiastolic", value)} placeholder="76" />
-              </div>
-              <FormField label="HbA1c (%)" type="number" value={form.hba1c} onChange={(value) => updateField("hba1c", value)} placeholder="5.3" />
-              <FormField label="Daily steps" type="number" value={form.dailySteps} onChange={(value) => updateField("dailySteps", value)} placeholder="9200" />
-              <FormField label="Fasting blood sugar (mg/dL)" type="number" value={form.fastingBloodSugar} onChange={(value) => updateField("fastingBloodSugar", value)} placeholder="92" />
-              <FormField label="Vitamin D (ng/mL)" type="number" value={form.vitaminD} onChange={(value) => updateField("vitaminD", value)} placeholder="34" />
-              <FormField label="Vitamin B12 (pg/mL)" type="number" value={form.vitaminB12} onChange={(value) => updateField("vitaminB12", value)} placeholder="540" />
-              <FormField label="Iron / Ferritin" value={form.ironFerritin} onChange={(value) => updateField("ironFerritin", value)} placeholder="Ferritin 72 ng/mL" />
-              <FormField label="Magnesium" value={form.magnesium} onChange={(value) => updateField("magnesium", value)} placeholder="2.0 mg/dL" />
-              <FormField label="Sleep hours" type="number" value={form.sleepHours} onChange={(value) => updateField("sleepHours", value)} placeholder="7.4" />
-              <FormField label="TSH" value={form.tsh} onChange={(value) => updateField("tsh", value)} placeholder="2.1" />
-              <FormField label="Cortisol" value={form.cortisol} onChange={(value) => updateField("cortisol", value)} placeholder="13.2" />
-              <FormField label="Testosterone" value={form.testosterone} onChange={(value) => updateField("testosterone", value)} placeholder="560" />
-            </div>
-
-            <div className="mt-4 grid gap-4">
-              <TextAreaField label="LFT" value={form.lft} onChange={(value) => updateField("lft", value)} placeholder="ALT 24 | AST 22 | Bilirubin 0.8" />
-              <TextAreaField label="RFT" value={form.rft} onChange={(value) => updateField("rft", value)} placeholder="Creatinine 0.9 | Urea 26 | eGFR 104" />
-              <TextAreaField label="Lipid profile" value={form.lipidProfile} onChange={(value) => updateField("lipidProfile", value)} placeholder="LDL 96 | HDL 58 | Triglycerides 110 | Total cholesterol 176" />
-            </div>
+            <Button className="mt-5" onClick={connectWearable} disabled={wearableLoading}>
+              {wearableLoading ? "Fetching Samsung Health..." : "Fetch from wearables"} <Watch size={18} />
+            </Button>
+            {wearableMessage ? <StatusNote tone={wearableLoading ? "info" : "success"}>{wearableMessage}</StatusNote> : null}
           </Card>
 
-          <div className="space-y-6">
-            <Card title="2. Auto-fill from Wearables">
-              <p className="text-sm leading-7 text-slate-300">
-                Use this when a watch or wearable is connected. For now, only fields that are realistically wearable-driven
-                are auto-filled here: stress, activity, exercise, pulse rate, daily steps, sleep hours, and body profile
-                metrics such as height, weight, and body composition.
-              </p>
-              <Button className="mt-5" onClick={connectWearable} disabled={wearableLoading}>
-                {wearableLoading ? "Fetching Samsung Health..." : "Fetch from wearables"} <Watch size={18} />
+          <Card
+            title="2. Manual Health Intake"
+            action={
+              <Button
+                variant="secondary"
+                onClick={() => setManualExpanded((current) => !current)}
+                aria-expanded={manualExpanded}
+                aria-controls="manual-health-fields"
+                aria-label={manualExpanded ? "Hide manual health fields" : "Enter manual health intake"}
+              >
+                <span className="hidden sm:inline">{manualExpanded ? "Hide fields" : "Enter manually"}</span>
+                <span className="sm:hidden">{manualExpanded ? "Hide" : "Enter"}</span>
+                {manualExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
               </Button>
-              {wearableMessage ? <StatusNote tone={wearableLoading ? "info" : "success"}>{wearableMessage}</StatusNote> : null}
-            </Card>
+            }
+          >
+            <p className="text-sm leading-7 text-slate-300">
+              Keep this closed when wearable and report uploads are enough. Open it when you want to add or correct values by hand.
+            </p>
+            {!manualExpanded ? (
+              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                <ManualSummary label="Manual fields" value={`${filledManualFields}/${manualFieldCount.length}`} />
+                <ManualSummary label="Best for" value="Missing data" />
+                <ManualSummary label="Status" value={filledManualFields ? "In progress" : "Optional"} />
+              </div>
+            ) : (
+              <div id="manual-health-fields" className="mt-5">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FormField label="Full name" value={form.fullName} onChange={(value) => updateField("fullName", value)} placeholder="Aarav Mehta" />
+                  <FormField label="Current age" type="number" value={form.currentAge} onChange={(value) => updateField("currentAge", value)} placeholder="34" />
+                  <FormField label="Height (cm)" type="number" value={form.height} onChange={(value) => updateField("height", value)} placeholder="172" />
+                  <FormField label="Weight (kg)" type="number" value={form.weight} onChange={(value) => updateField("weight", value)} placeholder="74" />
+                  <FormField label="Body composition" value={form.bodyComposition} onChange={(value) => updateField("bodyComposition", value)} placeholder="Body fat 18% | Muscle mass 31 kg | BMI 25.0" />
+                  <FormField label="Pulse rate (bpm)" type="number" value={form.pulseRate} onChange={(value) => updateField("pulseRate", value)} placeholder="64" />
+                  <FormField label="Stress score" type="number" value={form.stress} onChange={(value) => updateField("stress", value)} placeholder="28" />
+                  <FormField label="Activity score" type="number" value={form.activity} onChange={(value) => updateField("activity", value)} placeholder="82" />
+                  <FormField label="Exercise minutes" type="number" value={form.exercise} onChange={(value) => updateField("exercise", value)} placeholder="46" />
+                  <div className="grid grid-cols-2 gap-3">
+                    <FormField label="BP systolic" type="number" value={form.bpSystolic} onChange={(value) => updateField("bpSystolic", value)} placeholder="118" />
+                    <FormField label="BP diastolic" type="number" value={form.bpDiastolic} onChange={(value) => updateField("bpDiastolic", value)} placeholder="76" />
+                  </div>
+                  <FormField label="HbA1c (%)" type="number" value={form.hba1c} onChange={(value) => updateField("hba1c", value)} placeholder="5.3" />
+                  <FormField label="Daily steps" type="number" value={form.dailySteps} onChange={(value) => updateField("dailySteps", value)} placeholder="9200" />
+                  <FormField label="Fasting blood sugar (mg/dL)" type="number" value={form.fastingBloodSugar} onChange={(value) => updateField("fastingBloodSugar", value)} placeholder="92" />
+                  <FormField label="Vitamin D (ng/mL)" type="number" value={form.vitaminD} onChange={(value) => updateField("vitaminD", value)} placeholder="34" />
+                  <FormField label="Vitamin B12 (pg/mL)" type="number" value={form.vitaminB12} onChange={(value) => updateField("vitaminB12", value)} placeholder="540" />
+                  <FormField label="Iron / Ferritin" value={form.ironFerritin} onChange={(value) => updateField("ironFerritin", value)} placeholder="Ferritin 72 ng/mL" />
+                  <FormField label="Magnesium" value={form.magnesium} onChange={(value) => updateField("magnesium", value)} placeholder="2.0 mg/dL" />
+                  <FormField label="Sleep hours" type="number" value={form.sleepHours} onChange={(value) => updateField("sleepHours", value)} placeholder="7.4" />
+                  <FormField label="TSH" value={form.tsh} onChange={(value) => updateField("tsh", value)} placeholder="2.1" />
+                  <FormField label="Cortisol" value={form.cortisol} onChange={(value) => updateField("cortisol", value)} placeholder="13.2" />
+                  <FormField label="Testosterone" value={form.testosterone} onChange={(value) => updateField("testosterone", value)} placeholder="560" />
+                </div>
 
-            <Card title="3. Upload Blood Reports and Health Files">
+                <div className="mt-4 grid gap-4">
+                  <TextAreaField label="LFT" value={form.lft} onChange={(value) => updateField("lft", value)} placeholder="ALT 24 | AST 22 | Bilirubin 0.8" />
+                  <TextAreaField label="RFT" value={form.rft} onChange={(value) => updateField("rft", value)} placeholder="Creatinine 0.9 | Urea 26 | eGFR 104" />
+                  <TextAreaField label="Lipid profile" value={form.lipidProfile} onChange={(value) => updateField("lipidProfile", value)} placeholder="LDL 96 | HDL 58 | Triglycerides 110 | Total cholesterol 176" />
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+
+        <div className="mt-6">
+          <Card title="3. Upload Blood Reports and Health Files">
               <p className="text-sm leading-7 text-slate-300">
                 Upload PDF, PPT, CSV, DOC, or text-based health reports. The intake assistant tries to confirm recognizable
                 data points and fills the matching boxes automatically.
@@ -648,7 +675,6 @@ export function LandingPage() {
                 </div>
               ) : null}
             </Card>
-          </div>
         </div>
 
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
@@ -753,6 +779,15 @@ function SummaryChip({ icon, label, value }: { icon: React.ReactNode; label: str
         <p className="text-[11px] uppercase tracking-[0.18em] text-slate-500">{label}</p>
         <p className="truncate text-sm font-semibold text-white">{value}</p>
       </div>
+    </div>
+  );
+}
+
+function ManualSummary({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+      <p className="text-xs text-slate-500">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-white">{value}</p>
     </div>
   );
 }
