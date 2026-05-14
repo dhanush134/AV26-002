@@ -318,9 +318,7 @@ export function LandingPage() {
 
   const filledManualFields = manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length;
   const completion = Math.round((filledManualFields / manualFieldCount.length) * 100);
-  const hasBloodDetails = [form.hba1c, form.vitaminD, form.vitaminB12, form.bpSystolic, form.bpDiastolic].some(
-    (value) => value.trim().length > 0,
-  );
+  const hasRequiredBmiMetrics = [form.currentAge, form.height, form.weight].every((value) => value.trim().length > 0);
 
   const updateField = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -442,7 +440,7 @@ export function LandingPage() {
 
   const submitBloodDetails = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!hasBloodDetails) return;
+    if (!hasRequiredBmiMetrics) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName }));
     setBloodDetailsMessage("Blood details submitted and saved.");
   };
@@ -511,22 +509,28 @@ export function LandingPage() {
             {wearableMessage ? <StatusNote tone={wearableLoading ? "info" : "success"}>{wearableMessage}</StatusNote> : null}
           </Card>
 
-          <Card title="Enter following details " className="h-full">
-            <p className="text-sm leading-6 text-slate-300">
-              Add key blood report values to improve your twin profile.
-            </p>
+          <Card title="Add BMI metrics" className="h-full">
             <form className="mt-4" onSubmit={submitBloodDetails}>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <BloodReportField label="Age" value={form.currentAge} onChange={(value) => updateBloodDetail("currentAge", value)} required />
+                <BloodReportField label="Weight" value={form.weight} onChange={(value) => updateBloodDetail("weight", value)} required />
+                <BloodReportField label="Height" value={form.height} onChange={(value) => updateBloodDetail("height", value)} required />
+              </div>
+
+              <p className="mt-6 text-sm leading-6 text-slate-300">
+                Add key blood report values to improve your twin profile.
+              </p>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
                 <BloodReportField label="HbA1c" value={form.hba1c} onChange={(value) => updateBloodDetail("hba1c", value)} />
                 <BloodReportField label="Vitamin D" value={form.vitaminD} onChange={(value) => updateBloodDetail("vitaminD", value)} />
                 <BloodReportField label="Vitamin B12" value={form.vitaminB12} onChange={(value) => updateBloodDetail("vitaminB12", value)} />
                 <div className="grid grid-cols-2 gap-3">
-                  <BloodReportField label="BP systolic" value={form.bpSystolic} onChange={(value) => updateBloodDetail("bpSystolic", value)} />
-                  <BloodReportField label="BP diastolic" value={form.bpDiastolic} onChange={(value) => updateBloodDetail("bpDiastolic", value)} />
+                  <BloodReportField label="BP" inputLabel="BP systolic" value={form.bpSystolic} onChange={(value) => updateBloodDetail("bpSystolic", value)} />
+                  <BloodReportField label="BP" inputLabel="BP diastolic" value={form.bpDiastolic} onChange={(value) => updateBloodDetail("bpDiastolic", value)} />
                 </div>
               </div>
               <div className="mt-5 flex flex-wrap items-center gap-3">
-                <Button type="submit" disabled={!hasBloodDetails}>Submit details</Button>
+                <Button type="submit" disabled={!hasRequiredBmiMetrics}>Submit details</Button>
                 {bloodDetailsMessage ? <span className="text-sm font-medium text-emerald-100">{bloodDetailsMessage}</span> : null}
               </div>
             </form>
@@ -609,19 +613,28 @@ function HumanProgress({ value }: { value: number }) {
 
 function BloodReportField({
   label,
+  inputLabel,
   value,
   onChange,
+  required = false,
 }: {
   label: string;
+  inputLabel?: string;
   value: string;
   onChange: (value: string) => void;
+  required?: boolean;
 }) {
   return (
     <label>
-      <span className="mb-2 block text-sm font-medium text-slate-300">{label}</span>
+      <span className="mb-2 block text-sm font-medium text-slate-300">
+        {label}
+        {required ? <span className="ml-1 text-cyan-200">*</span> : null}
+      </span>
       <input
         className="field"
         type="number"
+        aria-label={inputLabel || label}
+        required={required}
         value={value}
         onChange={(event) => onChange(event.target.value)}
       />
