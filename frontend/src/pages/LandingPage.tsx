@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronUp,
   CloudUpload,
-  Dna,
   FileSearch,
   HeartPulse,
   Sparkles,
@@ -19,8 +18,6 @@ import { Card } from "../components/ui/Card";
 const STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-
-type GeneticTrack = "nutrigenomics" | "fitnessGenetics" | "sleepRecoveryGenetics" | "stimulantProcessingGenetics";
 
 type IntakeForm = {
   fullName: string;
@@ -187,29 +184,6 @@ const manualFieldCount = [
   "testosterone",
 ] as const;
 
-const geneticCards: Array<{ key: GeneticTrack; title: string; copy: string }> = [
-  {
-    key: "nutrigenomics",
-    title: "Nutrigenomics",
-    copy: "Macro tolerance, methylation support, and micronutrient response.",
-  },
-  {
-    key: "fitnessGenetics",
-    title: "Fitness Genetics",
-    copy: "VO2 response, recovery style, strength bias, and training adaptation.",
-  },
-  {
-    key: "sleepRecoveryGenetics",
-    title: "Sleep and Recovery Genetics",
-    copy: "Chronotype, sleep pressure, inflammation, and overnight recovery tendencies.",
-  },
-  {
-    key: "stimulantProcessingGenetics",
-    title: "Alcohol and Caffeine Processing Genetics",
-    copy: "Caffeine clearance, stimulant sensitivity, and alcohol metabolism clues.",
-  },
-];
-
 function decodeFileToText(file: File) {
   return file.arrayBuffer().then((buffer) => new TextDecoder("utf-8", { fatal: false }).decode(buffer).replace(/\0/g, " "));
 }
@@ -328,30 +302,23 @@ export function LandingPage() {
   const [reportMessage, setReportMessage] = useState("");
   const [reportName, setReportName] = useState("");
   const [manualExpanded, setManualExpanded] = useState(false);
-  const [geneticUploads, setGeneticUploads] = useState<Record<GeneticTrack, string>>({
-    nutrigenomics: "",
-    fitnessGenetics: "",
-    sleepRecoveryGenetics: "",
-    stimulantProcessingGenetics: "",
-  });
   const [extractedFields, setExtractedFields] = useState<ExtractedField[]>([]);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return;
     try {
-      const parsed = JSON.parse(saved) as { form?: IntakeForm; reportName?: string; geneticUploads?: Record<GeneticTrack, string> };
+      const parsed = JSON.parse(saved) as { form?: IntakeForm; reportName?: string };
       if (parsed.form) setForm({ ...defaultForm, ...parsed.form });
       if (parsed.reportName) setReportName(parsed.reportName);
-      if (parsed.geneticUploads) setGeneticUploads((current) => ({ ...current, ...parsed.geneticUploads }));
     } catch {
       localStorage.removeItem(STORAGE_KEY);
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName, geneticUploads }));
-  }, [form, reportName, geneticUploads]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName }));
+  }, [form, reportName]);
 
   const filledManualFields = manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length;
   const completion = Math.round((filledManualFields / manualFieldCount.length) * 100);
@@ -469,12 +436,6 @@ export function LandingPage() {
     }
   };
 
-  const handleGeneticUpload = (track: GeneticTrack, file: File | undefined) => {
-    if (!file) return;
-    setGeneticUploads((current) => ({ ...current, [track]: file.name }));
-    updateField(track, true as IntakeForm[typeof track]);
-  };
-
   return (
     <main className="min-h-screen bg-life-grid bg-[size:44px_44px]">
       <section className="page-wrap py-6 sm:py-8">
@@ -497,7 +458,7 @@ export function LandingPage() {
                         Build your ideal future twin.
                       </h1>
                       <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">
-                        Add current health, labs, wearable trends, and genetics so LifeTwin can model a sharper future version of you.
+                        Add current health, labs, wearable trends, and reports so LifeTwin can model a sharper future version of you.
                       </p>
                     </div>
                   </div>
@@ -545,10 +506,10 @@ export function LandingPage() {
         </div>
 
         <div className="mt-6 grid items-start gap-6 xl:grid-cols-[0.85fr_1.15fr]">
-          <Card title="1. Auto-fill from Wearables">
+          <Card title="Auto-fill from Wearables">
             <p className="text-sm leading-7 text-slate-300">
-              Use this when a watch or wearable is connected. Only wearable-friendly signals are auto-filled:
-              stress, activity, exercise, pulse rate, daily steps, sleep hours, height, weight, and body composition.
+              Use this option to fetch details from your smart watch<br />
+              Highly Recommended!
             </p>
             <Button className="mt-5" onClick={connectWearable} disabled={wearableLoading}>
               {wearableLoading ? "Fetching Samsung Health..." : "Fetch from wearables"} <Watch size={18} />
@@ -557,7 +518,7 @@ export function LandingPage() {
           </Card>
 
           <Card
-            title="2. Manual Health Intake"
+            title="Manual Health Intake"
             action={
               <Button
                 variant="secondary"
@@ -573,13 +534,11 @@ export function LandingPage() {
             }
           >
             <p className="text-sm leading-7 text-slate-300">
-              Keep this closed when wearable and report uploads are enough. Open it when you want to add or correct values by hand.
+              Enter mannually if no smart watch being used
             </p>
             {!manualExpanded ? (
-              <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="mt-5 max-w-48">
                 <ManualSummary label="Manual fields" value={`${filledManualFields}/${manualFieldCount.length}`} />
-                <ManualSummary label="Best for" value="Missing data" />
-                <ManualSummary label="Status" value={filledManualFields ? "In progress" : "Optional"} />
               </div>
             ) : (
               <div id="manual-health-fields" className="mt-5">
@@ -620,19 +579,19 @@ export function LandingPage() {
           </Card>
         </div>
 
-        <div className="mt-6 grid items-start gap-6 xl:grid-cols-[0.9fr_1.1fr]">
-          <Card title="3. Upload Blood Reports and Health Files">
+        <div className="mt-6 grid items-start gap-6 xl:grid-cols-[minmax(0,0.9fr)_minmax(260px,0.7fr)]">
+          <Card title="Upload Blood Report">
             <p className="text-sm leading-6 text-slate-300">
-              Upload PDF, PPT, CSV, DOC, or text reports. The intake assistant confirms recognizable values and fills matching boxes automatically.
+              Upload relevant PDF
             </p>
             <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-cyan-300/25 bg-cyan-300/5 px-4 py-6 text-center transition hover:bg-cyan-300/10">
               <CloudUpload className="h-7 w-7 text-cyan-200" />
-              <span className="mt-3 text-sm font-semibold text-white">Upload lab report or blood test file</span>
-              <span className="mt-1 text-xs text-slate-400">PDF, PPT, CSV, TXT, XLSX, or image</span>
+              <span className="mt-3 text-sm font-semibold text-white">Upload relevant PDF</span>
+              <span className="mt-1 text-xs text-slate-400">PDF blood report</span>
               <input
                 className="hidden"
                 type="file"
-                accept=".pdf,.ppt,.pptx,.doc,.docx,.csv,.txt,.json,.xlsx,.xls,image/*"
+                accept=".pdf"
                 onChange={(event) => handleReportUpload(event.target.files?.[0])}
               />
             </label>
@@ -663,52 +622,15 @@ export function LandingPage() {
             ) : null}
           </Card>
 
-          <Card title="4. Genetics Uploads">
-            <p className="mb-4 text-sm leading-6 text-slate-300">
-              Switch on the genetics layers you have, add files, and keep notes for nutrition, recovery, training, or stimulant response.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {geneticCards.map((card) => (
-                <div key={card.key} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                  <label className="flex items-start gap-3">
-                    <input
-                      type="checkbox"
-                      checked={form[card.key]}
-                      onChange={(event) => updateField(card.key, event.target.checked as IntakeForm[typeof card.key])}
-                      className="mt-1 h-4 w-4 rounded border-white/15 bg-transparent text-cyan-300"
-                    />
-                    <div>
-                      <p className="text-sm font-semibold text-white">{card.title}</p>
-                      <p className="mt-1 text-xs leading-5 text-slate-300">{card.copy}</p>
-                    </div>
-                  </label>
-                  <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-dashed border-white/10 bg-black/10 px-3 py-2.5 text-xs text-slate-300 transition hover:border-cyan-300/25 hover:bg-cyan-300/5">
-                    <span>{geneticUploads[card.key] || "Upload supporting file"}</span>
-                    <Dna size={16} className="text-cyan-200" />
-                    <input
-                      className="hidden"
-                      type="file"
-                      accept=".pdf,.ppt,.pptx,.doc,.docx,.csv,.txt,.json,image/*"
-                      onChange={(event) => handleGeneticUpload(card.key, event.target.files?.[0])}
-                    />
-                  </label>
-                </div>
-              ))}
+          <div className="flex justify-end xl:pt-10">
+            <div className="w-full max-w-sm rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-300/15 via-white/[0.06] to-blue-400/15 p-4 shadow-glow backdrop-blur-xl">
+              <p className="text-sm font-semibold text-white">Ready when your intake looks good</p>
+              <p className="mt-1 text-xs leading-5 text-slate-300">Continue to see your LifeTwin experience.</p>
+              <Button className="mt-4 min-h-12 w-full rounded-2xl px-5 text-base" onClick={() => navigate("/twin")}>
+                Continue to your twin <ArrowRight size={18} />
+              </Button>
             </div>
-            <TextAreaField
-              label="Genetics notes"
-              value={form.geneticsNotes}
-              onChange={(value) => updateField("geneticsNotes", value)}
-              placeholder="Anything you already know about caffeine sensitivity, training response, food intolerances, recovery, or nutrient handling."
-              className="mt-4"
-            />
-          </Card>
-        </div>
-
-        <div className="mt-6 flex justify-end">
-          <Button onClick={() => navigate("/twin")}>
-            Continue to your twin <ArrowRight size={18} />
-          </Button>
+          </div>
         </div>
       </section>
     </main>
