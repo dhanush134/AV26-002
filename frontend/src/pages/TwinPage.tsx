@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Activity, Circle, Dna, Dumbbell, HeartPulse, Moon, Share2, Sparkles, Sun, TestTube2, Zap } from "lucide-react";
+import { Activity, Circle, Dna, Dumbbell, HeartPulse, Moon, RefreshCw, Share2, Sparkles, Sun, TestTube2, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const COLORS = {
@@ -24,6 +24,8 @@ const COLORS = {
 const TABS = ["routine", "biomarkers", "nutrition", "twin"] as const;
 const INTAKE_STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
+const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
+const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type Tab = (typeof TABS)[number];
@@ -45,6 +47,15 @@ type Biomarkers = Record<BiomarkerKey, number>;
 
 type IntakeDraft = {
   form?: {
+    currentAge?: string;
+    height?: string;
+    weight?: string;
+    pulseRate?: string;
+    stress?: string;
+    exercise?: string;
+    dailySteps?: string;
+    sleepHours?: string;
+    targetTwinAge?: string;
     hba1c?: string;
     bpSystolic?: string;
     bpDiastolic?: string;
@@ -74,12 +85,92 @@ type IntakeBiomarkers = {
 };
 
 interface RoutineItem {
+  id?: string;
   time: string;
   activity: string;
   duration: string;
   impact: "High" | "Med" | "Low";
   done: boolean;
+  why?: string;
+  strictRule?: string;
+  progressionNote?: string;
+  category?: string;
 }
+
+type NegativeChoice =
+  | "alcohol"
+  | "smoking"
+  | "high_sugar"
+  | "fried_food"
+  | "late_heavy_meal"
+  | "missed_sleep_window"
+  | "missed_workout"
+  | "very_high_stress"
+  | "low_water"
+  | "excess_caffeine";
+
+type AdaptivePlanActivity = {
+  id: string;
+  time_window: string;
+  title: string;
+  category: string;
+  target: string;
+  why: string;
+  priority: "critical" | "high" | "medium" | "low";
+  strict_rule: string;
+  progression_note: string;
+};
+
+type AdaptiveMeal = {
+  meal: "breakfast" | "lunch" | "snack" | "dinner";
+  composition: string;
+  north_indian_veg: string[];
+  north_indian_non_veg: string[];
+  south_indian_veg: string[];
+  south_indian_non_veg: string[];
+  note: string;
+};
+
+type AdaptiveNutrition = {
+  macro_distribution: {
+    protein_percent: number;
+    carbs_percent: number;
+    fats_percent: number;
+    fiber_grams: number;
+    water_liters: number;
+  };
+  meals: AdaptiveMeal[];
+  supplement_guidance: Array<{
+    name: string;
+    priority: "critical" | "high" | "medium" | "optional" | "avoid";
+    why: string;
+    suggested_timing: string;
+    safety_note: string;
+  }>;
+};
+
+type AdaptivePlanResponse = {
+  plan_date: string;
+  generated_by: "openai" | "fallback";
+  model_used: string;
+  strictness: "strict" | "progressive" | "recovery";
+  summary: string;
+  timeline: {
+    estimated_weeks: number;
+    confidence: "low" | "medium" | "high";
+    summary: string;
+    next_review_date: string;
+    assumptions: string[];
+  };
+  activities: AdaptivePlanActivity[];
+  negative_options: NegativeChoice[];
+  checkin_prompt: string;
+  nutrition: AdaptiveNutrition;
+  safety_notes: string[];
+};
+
+type RoutinePlanResponse = Omit<AdaptivePlanResponse, "nutrition">;
+type NutritionPlanResponse = Pick<AdaptivePlanResponse, "plan_date" | "generated_by" | "model_used" | "summary" | "nutrition" | "safety_notes">;
 
 const appCss = `
 @keyframes pulse-ring {
@@ -187,12 +278,119 @@ async function fetchLatestBiomarkersFromDb(): Promise<IntakeBiomarkers | undefin
   };
 }
 
+function loadIntakeForm() {
+  try {
+    const saved = localStorage.getItem(INTAKE_STORAGE_KEY);
+    if (!saved) return undefined;
+    return (JSON.parse(saved) as IntakeDraft).form;
+  } catch {
+    return undefined;
+  }
+}
+
+function loadCachedRoutinePlan(): RoutinePlanResponse | null {
+  try {
+    const saved = localStorage.getItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as RoutinePlanResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadCachedNutritionPlan(): NutritionPlanResponse | null {
+  try {
+    const saved = localStorage.getItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as NutritionPlanResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+function adaptiveImpact(priority: AdaptivePlanActivity["priority"]): RoutineItem["impact"] {
+  if (priority === "critical" || priority === "high") return "High";
+  if (priority === "medium") return "Med";
+  return "Low";
+}
+
+function activitiesToRoutine(activities: AdaptivePlanActivity[]): RoutineItem[] {
+  return activities.map((item) => ({
+    id: item.id,
+    time: item.time_window,
+    activity: item.title,
+    duration: item.target,
+    impact: adaptiveImpact(item.priority),
+    done: false,
+    why: item.why,
+    strictRule: item.strict_rule,
+    progressionNote: item.progression_note,
+    category: item.category,
+  }));
+}
+
+function buildMetricsPayload(biomarkers: Biomarkers) {
+  const form = loadIntakeForm();
+  return {
+    age: numberFromDraft(form?.currentAge),
+    weight_kg: numberFromDraft(form?.weight),
+    height_cm: numberFromDraft(form?.height),
+    stress_score: numberFromDraft(form?.stress),
+    heart_rate_bpm: numberFromDraft(form?.pulseRate),
+    sleep_hours: numberFromDraft(form?.sleepHours) ?? biomarkers.sleepHrs,
+    steps: numberFromDraft(form?.dailySteps) ?? biomarkers.steps,
+    workout_info: form?.exercise ? `Workout/exercise minutes or note: ${form.exercise}` : undefined,
+    biomarkers: {
+      hba1c: biomarkers.hba1c,
+      bp_systolic: Math.round(biomarkers.systolic),
+      bp_diastolic: Math.round(biomarkers.diastolic),
+      ldl: biomarkers.ldl,
+      hdl: biomarkers.hdl,
+      triglycerides: biomarkers.triglycerides,
+      vitamin_d: biomarkers.vitaminD,
+      vitamin_b12: biomarkers.b12,
+      sgpt: biomarkers.alt,
+      creatinine: biomarkers.creatinine,
+    },
+  };
+}
+
+function formatPlanDate(value?: string) {
+  const date = value ? new Date(`${value}T00:00:00`) : new Date();
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+function nextDateString(value?: string) {
+  const base = value ? new Date(`${value}T00:00:00`) : new Date();
+  base.setDate(base.getDate() + 1);
+  return base.toISOString().slice(0, 10);
+}
+
+const NEGATIVE_LABELS: Record<NegativeChoice, string> = {
+  alcohol: "Alcohol",
+  smoking: "Smoking",
+  high_sugar: "High sugar",
+  fried_food: "Fried food",
+  late_heavy_meal: "Late heavy meal",
+  missed_sleep_window: "Missed sleep window",
+  missed_workout: "Missed workout",
+  very_high_stress: "Very high stress",
+  low_water: "Low water",
+  excess_caffeine: "Excess caffeine",
+};
+
 export function TwinPage() {
   const navigate = useNavigate();
-  const [age] = useState(34);
-  const [targetAge] = useState(65);
+  const intakeForm = loadIntakeForm();
+  const [age] = useState(numberFromDraft(intakeForm?.currentAge) ?? 34);
+  const [targetAge] = useState(numberFromDraft(intakeForm?.targetTwinAge) ?? 65);
   const [activeTab, setActiveTab] = useState<Tab>("biomarkers");
   const [intakeBiomarkers, setIntakeBiomarkers] = useState<IntakeBiomarkers>(() => loadIntakeBiomarkers());
+  const [routinePlan, setRoutinePlan] = useState<RoutinePlanResponse | null>(() => loadCachedRoutinePlan());
+  const [nutritionPlan, setNutritionPlan] = useState<NutritionPlanResponse | null>(() => loadCachedNutritionPlan());
+  const [routineLoading, setRoutineLoading] = useState(false);
+  const [nutritionLoading, setNutritionLoading] = useState(false);
+  const [adaptiveMessage, setAdaptiveMessage] = useState("");
+  const [negativeChoices, setNegativeChoices] = useState<NegativeChoice[]>([]);
+  const [dailyNotes, setDailyNotes] = useState("");
   const [biomarkers, setBiomarkers] = useState<Biomarkers>({
     ldl: 128,
     hdl: 48,
@@ -218,6 +416,12 @@ export function TwinPage() {
     { time: "9:30 PM", activity: "Blue-light off, magnesium", duration: "5 min", impact: "Med", done: false },
     { time: "10:00 PM", activity: "Sleep (target 7.5 hrs)", duration: "7.5 hrs", impact: "High", done: false },
   ]);
+
+  useEffect(() => {
+    if (routinePlan?.activities.length) {
+      setRoutine(activitiesToRoutine(routinePlan.activities));
+    }
+  }, [routinePlan]);
 
   const supplements = useMemo(
     () => [
@@ -267,6 +471,70 @@ export function TwinPage() {
     }));
   }, [intakeBiomarkers]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAdaptivePlan = async () => {
+      const userId = await getSingleUserId();
+      if (!userId || cancelled) {
+        setAdaptiveMessage("Submit intake details first to generate the adaptive AI plan.");
+        return;
+      }
+      setRoutineLoading(true);
+      setNutritionLoading(true);
+      setAdaptiveMessage("Generating routine and nutrition in parallel...");
+      const body = JSON.stringify({ metrics: buildMetricsPayload(biomarkers) });
+
+      const routineRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+      })
+        .then(async (routineResponse) => {
+          if (!routineResponse.ok) throw new Error(await routineResponse.text());
+          const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
+          if (!cancelled) {
+            localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
+            setRoutinePlan(nextRoutine);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setRoutineLoading(false);
+        });
+
+      const nutritionRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body,
+      })
+        .then(async (nutritionResponse) => {
+          if (!nutritionResponse.ok) throw new Error(await nutritionResponse.text());
+          const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
+          if (!cancelled) {
+            localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
+            setNutritionPlan(nextNutrition);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setNutritionLoading(false);
+        });
+
+      try {
+        await Promise.all([routineRequest, nutritionRequest]);
+        if (!cancelled) setAdaptiveMessage("AI plan ready.");
+      } catch {
+        if (!cancelled) setAdaptiveMessage("Could not generate the adaptive plan yet. Static routine is still available.");
+      }
+    };
+
+    loadAdaptivePlan();
+    return () => {
+      cancelled = true;
+    };
+    // Initial plan generation should happen once; manual refresh handles later biomarker edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const matchScore = Math.round(
     (doneCount / routine.length) * 100 * 0.4 +
       (biomarkers.sleepHrs / 8) * 100 * 0.2 +
@@ -285,6 +553,122 @@ export function TwinPage() {
     setRoutine((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, done: !item.done } : item)));
   };
 
+  const refreshAdaptivePlan = async () => {
+    const userId = await getSingleUserId();
+    if (!userId) {
+      setAdaptiveMessage("Submit intake details first to generate the adaptive AI plan.");
+      return;
+    }
+    setRoutineLoading(true);
+    setNutritionLoading(true);
+    setAdaptiveMessage("Refreshing plan from the latest metrics...");
+    const body = JSON.stringify({ metrics: buildMetricsPayload(biomarkers) });
+    const routineRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+    })
+      .then(async (routineResponse) => {
+        if (!routineResponse.ok) throw new Error(await routineResponse.text());
+        const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
+        localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
+        setRoutinePlan(nextRoutine);
+        return nextRoutine;
+      })
+      .finally(() => setRoutineLoading(false));
+    const nutritionRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+    })
+      .then(async (nutritionResponse) => {
+        if (!nutritionResponse.ok) throw new Error(await nutritionResponse.text());
+        const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
+        localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
+        setNutritionPlan(nextNutrition);
+      })
+      .finally(() => setNutritionLoading(false));
+    try {
+      const nextRoutine = await routineRequest;
+      await nutritionRequest;
+      setNegativeChoices([]);
+      setDailyNotes("");
+      setAdaptiveMessage(`Plan refreshed. Timeline: ${nextRoutine.timeline.estimated_weeks} weeks.`);
+    } catch {
+      setAdaptiveMessage("Could not refresh the AI plan. Check that the backend and OpenAI key are configured.");
+    }
+  };
+
+  const submitDailyCheckin = async () => {
+    const userId = await getSingleUserId();
+    if (!userId) {
+      setAdaptiveMessage("Submit intake details first to submit a check-in.");
+      return;
+    }
+    const completed = routine.filter((item) => item.done).map((item, index) => item.id || `routine-${index}`);
+    const skipped = routine.filter((item) => !item.done).map((item, index) => item.id || `routine-${index}`);
+    setRoutineLoading(true);
+    setNutritionLoading(true);
+    setAdaptiveMessage("Submitting today and calculating tomorrow...");
+    try {
+      const feedback = {
+        completed_activity_ids: completed,
+        skipped_activity_ids: skipped,
+        negative_choices: negativeChoices,
+        notes: dailyNotes || null,
+      };
+      const checkinPayload = {
+        plan_date: routinePlan?.plan_date,
+        metrics: buildMetricsPayload(biomarkers),
+        feedback,
+      };
+      const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/checkin-log`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(checkinPayload),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const nextPlanDate = nextDateString(routinePlan?.plan_date || nutritionPlan?.plan_date);
+      const nextPlanPayload = JSON.stringify({
+        plan_date: nextPlanDate,
+        metrics: buildMetricsPayload(biomarkers),
+        previous_day: feedback,
+      });
+      const routineRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: nextPlanPayload,
+      })
+        .then(async (routineResponse) => {
+          if (!routineResponse.ok) throw new Error(await routineResponse.text());
+          const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
+          localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
+          setRoutinePlan(nextRoutine);
+          return nextRoutine;
+        })
+        .finally(() => setRoutineLoading(false));
+      const nutritionRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: nextPlanPayload,
+      })
+        .then(async (nutritionResponse) => {
+          if (!nutritionResponse.ok) throw new Error(await nutritionResponse.text());
+          const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
+          localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
+          setNutritionPlan(nextNutrition);
+        })
+        .finally(() => setNutritionLoading(false));
+      const nextRoutine = await routineRequest;
+      await nutritionRequest;
+      setNegativeChoices([]);
+      setDailyNotes("");
+      setAdaptiveMessage(`Tomorrow's plan is ready. Timeline: ${nextRoutine.timeline.estimated_weeks} weeks.`);
+    } catch {
+      setAdaptiveMessage("Could not submit today's check-in. Check backend logs and try again.");
+    }
+  };
+
   return (
     <div className="lt-shell lt-dashboard">
       <style>{appCss}</style>
@@ -293,12 +677,20 @@ export function TwinPage() {
       {activeTab === "routine" ? (
         <RoutineTab
           age={age}
-          targetAge={targetAge}
           routine={routine}
           biomarkers={biomarkers}
           clampedScore={clampedScore}
           doneCount={doneCount}
+          routinePlan={routinePlan}
+          adaptiveLoading={routineLoading || nutritionLoading}
+          adaptiveMessage={adaptiveMessage}
+          negativeChoices={negativeChoices}
+          dailyNotes={dailyNotes}
           toggleRoutine={toggleRoutine}
+          setNegativeChoices={setNegativeChoices}
+          setDailyNotes={setDailyNotes}
+          onRefreshPlan={refreshAdaptivePlan}
+          onSubmitCheckin={submitDailyCheckin}
         />
       ) : null}
 
@@ -312,7 +704,9 @@ export function TwinPage() {
         />
       ) : null}
 
-      {activeTab === "nutrition" ? <NutritionTab age={age} supplements={supplements} /> : null}
+      {activeTab === "nutrition" ? (
+        <NutritionTab age={age} supplements={supplements} nutrition={nutritionPlan?.nutrition} plan={nutritionPlan} loading={nutritionLoading} />
+      ) : null}
 
       {activeTab === "twin" ? (
         <TwinTab age={age} targetAge={targetAge} bioAge={bioAge} twinAge={twinAge} clampedScore={clampedScore} />
@@ -704,7 +1098,7 @@ function Chip({
   );
 }
 
-function DailyRoutineCard({ time, activity, duration, impact, done, onToggle }: RoutineItem & { onToggle: () => void }) {
+function DailyRoutineCard({ time, activity, duration, impact, done, strictRule, onToggle }: RoutineItem & { onToggle: () => void }) {
   const impactColor = impact === "High" ? COLORS.accent : impact === "Med" ? COLORS.gold : COLORS.textMuted;
 
   return (
@@ -743,6 +1137,11 @@ function DailyRoutineCard({ time, activity, duration, impact, done, onToggle }: 
         <div style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 2 }}>
           {time} | {duration}
         </div>
+        {strictRule ? (
+          <div style={{ color: COLORS.gold, fontSize: 11, marginTop: 5, lineHeight: 1.45 }}>
+            Rule: {strictRule}
+          </div>
+        ) : null}
       </div>
       <div
         style={{
@@ -923,35 +1322,130 @@ function TopNav({
 
 function RoutineTab({
   age,
-  targetAge,
   routine,
   biomarkers,
   clampedScore,
   doneCount,
+  routinePlan,
+  adaptiveLoading,
+  adaptiveMessage,
+  negativeChoices,
+  dailyNotes,
   toggleRoutine,
+  setNegativeChoices,
+  setDailyNotes,
+  onRefreshPlan,
+  onSubmitCheckin,
 }: {
   age: number;
-  targetAge: number;
   routine: RoutineItem[];
   biomarkers: Biomarkers;
   clampedScore: number;
   doneCount: number;
+  routinePlan: RoutinePlanResponse | null;
+  adaptiveLoading: boolean;
+  adaptiveMessage: string;
+  negativeChoices: NegativeChoice[];
+  dailyNotes: string;
   toggleRoutine: (index: number) => void;
+  setNegativeChoices: (choices: NegativeChoice[]) => void;
+  setDailyNotes: (value: string) => void;
+  onRefreshPlan: () => void;
+  onSubmitCheckin: () => void;
 }) {
+  const negativeOptions = routinePlan?.negative_options || (Object.keys(NEGATIVE_LABELS) as NegativeChoice[]);
+  const toggleNegativeChoice = (choice: NegativeChoice) => {
+    setNegativeChoices(
+      negativeChoices.includes(choice)
+        ? negativeChoices.filter((item) => item !== choice)
+        : [...negativeChoices, choice],
+    );
+  };
+
   return (
     <div className="lt-page">
       <div className="lt-grid-two">
         <div>
           <div style={{ marginBottom: 24 }}>
-            <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: 0 }}>Today's Protocol</h2>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+              <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: 0 }}>Today's Protocol</h2>
+              <GhostButton onClick={onRefreshPlan}>
+                <RefreshCw size={15} /> {adaptiveLoading ? "Generating..." : "Refresh AI plan"}
+              </GhostButton>
+            </div>
             <p style={{ color: COLORS.textSecondary, marginTop: 6, fontSize: 14 }}>
-              Tailored for Pruthvi, {age} · targeting age {targetAge} twin
+              Tailored for Pruthvi, {age} · {formatPlanDate(routinePlan?.plan_date)}
             </p>
+            {routinePlan ? (
+              <div style={{ ...cardStyle, marginTop: 16, padding: 16, borderColor: COLORS.accentMid }}>
+                <div style={{ color: COLORS.accent, fontWeight: 900, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.5 }}>
+                  {routinePlan.strictness} plan | {routinePlan.generated_by === "openai" ? routinePlan.model_used : "local fallback"}
+                </div>
+                <p style={{ color: COLORS.textSecondary, margin: "8px 0 0", fontSize: 13, lineHeight: 1.5 }}>{routinePlan.summary}</p>
+                <p style={{ color: COLORS.gold, margin: "8px 0 0", fontSize: 12, lineHeight: 1.5 }}>
+                  Timeline: {routinePlan.timeline.estimated_weeks} weeks | Confidence: {routinePlan.timeline.confidence}
+                </p>
+              </div>
+            ) : null}
+            {adaptiveMessage ? <p style={{ color: COLORS.textMuted, marginTop: 10, fontSize: 12 }}>{adaptiveMessage}</p> : null}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {routine.map((item, index) => (
               <DailyRoutineCard key={`${item.time}-${item.activity}`} {...item} onToggle={() => toggleRoutine(index)} />
             ))}
+          </div>
+          <div style={{ ...cardStyle, borderRadius: 18, padding: 20, marginTop: 18 }}>
+            <SectionLabel color={COLORS.red}>Things that should not have happened</SectionLabel>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+              {negativeOptions.map((choice) => {
+                const active = negativeChoices.includes(choice);
+                return (
+                  <button
+                    key={choice}
+                    onClick={() => toggleNegativeChoice(choice)}
+                    style={{
+                      border: `1px solid ${active ? COLORS.red : COLORS.border}`,
+                      background: active ? COLORS.redDim : COLORS.surface,
+                      color: active ? COLORS.textPrimary : COLORS.textSecondary,
+                      borderRadius: 999,
+                      padding: "8px 12px",
+                      fontSize: 12,
+                      fontWeight: 800,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {NEGATIVE_LABELS[choice]}
+                  </button>
+                );
+              })}
+            </div>
+            <textarea
+              value={dailyNotes}
+              onChange={(event) => setDailyNotes(event.target.value)}
+              placeholder="Add context: what made you skip, cravings, pain, travel, stress, meal notes..."
+              style={{
+                width: "100%",
+                minHeight: 96,
+                border: `1px solid ${COLORS.border}`,
+                background: COLORS.surface,
+                color: COLORS.textPrimary,
+                borderRadius: 14,
+                padding: 14,
+                resize: "vertical",
+                outline: "none",
+                font: "inherit",
+                fontSize: 13,
+                boxSizing: "border-box",
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginTop: 14 }}>
+              <p style={{ color: COLORS.textMuted, margin: 0, fontSize: 12, maxWidth: 520 }}>
+                {routinePlan?.checkin_prompt || "Submit your completed checklist and misses so tomorrow can be recalculated."}
+              </p>
+              <PrimaryButton onClick={onSubmitCheckin} disabled={adaptiveLoading}>
+                {adaptiveLoading ? "Calculating..." : "Submit day"}
+              </PrimaryButton>
+            </div>
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1133,7 +1627,19 @@ function BiomarkerSection({ title, color, icon, children }: { title: string; col
   );
 }
 
-function NutritionTab({ age, supplements }: { age: number; supplements: Array<{ name: string; dose: string; reason: string; priority: string }> }) {
+function NutritionTab({
+  age,
+  supplements,
+  nutrition,
+  plan,
+  loading,
+}: {
+  age: number;
+  supplements: Array<{ name: string; dose: string; reason: string; priority: string }>;
+  nutrition?: AdaptiveNutrition;
+  plan?: NutritionPlanResponse | null;
+  loading?: boolean;
+}) {
   const meals = [
     {
       meal: "Breakfast 7:00 AM",
@@ -1163,6 +1669,117 @@ function NutritionTab({ age, supplements }: { age: number; supplements: Array<{ 
     { label: "Complex Carbs", target: "150g", current: 80, color: COLORS.purple },
     { label: "Fibre", target: "35g", current: 45, color: COLORS.blue },
   ];
+
+  if (nutrition) {
+    const macroTargets = [
+      { label: "Protein", target: `${nutrition.macro_distribution.protein_percent}%`, current: nutrition.macro_distribution.protein_percent, color: COLORS.accent },
+      { label: "Carbs", target: `${nutrition.macro_distribution.carbs_percent}%`, current: nutrition.macro_distribution.carbs_percent, color: COLORS.gold },
+      { label: "Fats", target: `${nutrition.macro_distribution.fats_percent}%`, current: nutrition.macro_distribution.fats_percent, color: COLORS.purple },
+      { label: "Fibre", target: `${nutrition.macro_distribution.fiber_grams}g`, current: Math.min(100, nutrition.macro_distribution.fiber_grams * 2), color: COLORS.blue },
+      { label: "Water", target: `${nutrition.macro_distribution.water_liters}L`, current: Math.min(100, nutrition.macro_distribution.water_liters * 25), color: COLORS.accent },
+    ];
+
+    return (
+      <div className="lt-page" style={{ maxWidth: 1040 }}>
+        <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: "0 0 8px" }}>Personalised Nutrition Stack</h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 32 }}>
+          <p style={{ color: COLORS.textSecondary, margin: 0, fontSize: 14 }}>
+            Composition-led Indian meal choices for Pruthvi, {age}. {plan ? `Plan date: ${formatPlanDate(plan.plan_date)}.` : ""}
+          </p>
+          {loading ? (
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, color: COLORS.accent, fontSize: 12, fontWeight: 900 }}>
+              <RefreshCw size={14} style={{ animation: "spin 1s linear infinite" }} /> Generating nutrition...
+            </div>
+          ) : null}
+        </div>
+
+        <div className="lt-nutrition" style={{ marginBottom: 32 }}>
+          <div>
+            <SectionLabel color={COLORS.gold}>Vitamin and Supplement Guidance</SectionLabel>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {nutrition.supplement_guidance.map((item) => {
+                const priorityColor = item.priority === "critical" ? COLORS.red : item.priority === "high" ? COLORS.gold : item.priority === "avoid" ? COLORS.red : COLORS.accent;
+                const priorityBackground = item.priority === "critical" || item.priority === "avoid" ? COLORS.redDim : item.priority === "high" ? COLORS.goldDim : COLORS.accentDim;
+                return (
+                  <div key={`${item.name}-${item.priority}`} style={{ ...cardStyle, borderRadius: 14, padding: "14px 18px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 14, alignItems: "flex-start" }}>
+                      <div>
+                        <div style={{ fontWeight: 800, fontSize: 14, color: COLORS.textPrimary }}>{item.name}</div>
+                        <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 5, lineHeight: 1.55 }}>{item.why}</div>
+                        <div style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 5 }}>{item.safety_note}</div>
+                      </div>
+                      <div style={{ textAlign: "right", minWidth: 90 }}>
+                        <div style={{ fontWeight: 900, color: COLORS.accent, fontSize: 12 }}>{item.suggested_timing}</div>
+                        <div style={{ fontSize: 9, fontWeight: 800, padding: "2px 8px", borderRadius: 99, marginTop: 4, color: priorityColor, background: priorityBackground, letterSpacing: 0.5 }}>
+                          {item.priority.toUpperCase()}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ ...cardStyle, borderRadius: 14, padding: 16, marginTop: 16 }}>
+              <div style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: 700, letterSpacing: 1, marginBottom: 12, textTransform: "uppercase" }}>
+                Daily Composition Targets
+              </div>
+              {macroTargets.map((macro) => (
+                <div key={macro.label} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ color: COLORS.textPrimary, fontSize: 12, fontWeight: 700 }}>{macro.label}</span>
+                    <span style={{ color: COLORS.textMuted, fontSize: 11 }}>Target {macro.target}</span>
+                  </div>
+                  <ProgressBar value={macro.current} color={macro.color} height={5} />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel color={COLORS.accent}>Today's Diet Choices</SectionLabel>
+            {nutrition.meals.map((meal) => (
+              <div key={meal.meal} style={{ ...cardStyle, borderRadius: 14, padding: "16px 18px", marginBottom: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+                  <div style={{ fontWeight: 800, fontSize: 14, color: COLORS.textPrimary, textTransform: "capitalize" }}>{meal.meal}</div>
+                  <div style={{ fontSize: 10, color: COLORS.accent, background: COLORS.accentDim, padding: "3px 8px", borderRadius: 99, fontWeight: 800 }}>
+                    {meal.composition}
+                  </div>
+                </div>
+                {[
+                  ["North veg", meal.north_indian_veg],
+                  ["North non-veg", meal.north_indian_non_veg],
+                  ["South veg", meal.south_indian_veg],
+                  ["South non-veg", meal.south_indian_non_veg],
+                ].map(([label, items]) => (
+                  <div key={label as string} style={{ marginTop: 8 }}>
+                    <div style={{ color: COLORS.textMuted, fontSize: 10, fontWeight: 900, textTransform: "uppercase", letterSpacing: 1 }}>{label as string}</div>
+                    <div style={{ color: COLORS.textSecondary, fontSize: 12, lineHeight: 1.6 }}>{(items as string[]).join(" | ")}</div>
+                  </div>
+                ))}
+                <p style={{ color: COLORS.gold, fontSize: 11, lineHeight: 1.5, margin: "10px 0 0" }}>{meal.note}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="lt-page" style={{ maxWidth: 760 }}>
+        <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: "0 0 8px" }}>Personalised Nutrition Stack</h2>
+        <div style={{ ...cardStyle, padding: 26, marginTop: 24, display: "flex", alignItems: "center", gap: 12 }}>
+          <RefreshCw size={18} style={{ color: COLORS.accent, animation: "spin 1s linear infinite" }} />
+          <div>
+            <div style={{ color: COLORS.textPrimary, fontWeight: 900, fontSize: 15 }}>Generating nutrition...</div>
+            <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4 }}>Routine can load first while this finishes.</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="lt-page" style={{ maxWidth: 1000 }}>

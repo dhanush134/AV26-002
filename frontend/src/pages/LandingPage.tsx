@@ -14,6 +14,8 @@ import { Card } from "../components/ui/Card";
 
 const STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
+const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
+const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 function optionalNumber(value: string) {
@@ -22,6 +24,26 @@ function optionalNumber(value: string) {
 
 function optionalInteger(value: string) {
   return value.trim() ? Math.round(Number(value)) : null;
+}
+
+function adaptiveMetricsFromForm(form: IntakeForm) {
+  return {
+    age: optionalInteger(form.currentAge),
+    weight_kg: optionalNumber(form.weight),
+    height_cm: optionalNumber(form.height),
+    stress_score: optionalNumber(form.stress),
+    heart_rate_bpm: optionalInteger(form.pulseRate),
+    sleep_hours: optionalNumber(form.sleepHours),
+    steps: optionalInteger(form.dailySteps),
+    workout_info: form.exercise.trim() ? `Workout/exercise minutes or note: ${form.exercise.trim()}` : null,
+    biomarkers: {
+      hba1c: optionalNumber(form.hba1c),
+      bp_systolic: optionalInteger(form.bpSystolic),
+      bp_diastolic: optionalInteger(form.bpDiastolic),
+      vitamin_d: optionalNumber(form.vitaminD),
+      vitamin_b12: optionalNumber(form.vitaminB12),
+    },
+  };
 }
 
 type IntakeForm = {
@@ -485,6 +507,8 @@ export function LandingPage() {
       }
       localStorage.removeItem(USER_STORAGE_KEY);
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
+      localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
       setForm(defaultForm);
       setReportName("");
       setExtractedFields([]);
@@ -603,7 +627,27 @@ export function LandingPage() {
         const errorText = await response.text();
         throw new Error(errorText || "Could not save biomarker details.");
       }
-      setBloodDetailsMessage("Details submitted and saved to the database.");
+      setBloodDetailsMessage("Details saved. Preloading AI routine and nutrition...");
+      const body = JSON.stringify({ metrics: adaptiveMetricsFromForm(form) });
+      const [routineResponse, nutritionResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        }),
+        fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+        }),
+      ]);
+      if (routineResponse.ok) {
+        localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(await routineResponse.json()));
+      }
+      if (nutritionResponse.ok) {
+        localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(await nutritionResponse.json()));
+      }
+      setBloodDetailsMessage("Details submitted. AI routine and nutrition are preloaded.");
     } catch (error) {
       setBloodDetailsMessage(error instanceof Error ? error.message : "Could not save biomarker details.");
     }

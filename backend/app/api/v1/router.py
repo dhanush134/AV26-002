@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    adaptive_plan,
     alerts,
     dashboard,
     daily,
@@ -22,6 +23,7 @@ api_router.include_router(lab_reports.router, tags=["Lab Reports"])
 api_router.include_router(risk.router, tags=["Risk"])
 api_router.include_router(twin.router, tags=["Digital Twin"])
 api_router.include_router(daily.router, tags=["Daily"])
+api_router.include_router(adaptive_plan.router, tags=["Adaptive Plan"])
 api_router.include_router(alerts.router, tags=["Alerts"])
 api_router.include_router(dashboard.router, tags=["Dashboard"])
 api_router.include_router(reports.router, tags=["Reports"])

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     database_url: str = Field(alias="DATABASE_URL")
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list, alias="CORS_ORIGINS")
     internal_sync_secret: str | None = Field(default=None, alias="INTERNAL_SYNC_SECRET")
+    openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-5.5", alias="OPENAI_MODEL")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
