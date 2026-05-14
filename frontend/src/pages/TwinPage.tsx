@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Activity, Circle, Dna, Dumbbell, HeartPulse, Moon, RefreshCw, Share2, Sparkles, Sun, TestTube2, Zap } from "lucide-react";
+import { Activity, Circle, Dna, Dumbbell, HeartPulse, Moon, RefreshCw, Sparkles, Sun, TestTube2, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 const COLORS = {
@@ -172,6 +172,16 @@ type AdaptivePlanResponse = {
 type RoutinePlanResponse = Omit<AdaptivePlanResponse, "nutrition">;
 type NutritionPlanResponse = Pick<AdaptivePlanResponse, "plan_date" | "generated_by" | "model_used" | "summary" | "nutrition" | "safety_notes">;
 
+type BiomarkerAnalysisResponse = {
+  generated_by: "openai" | "fallback";
+  model_used: string;
+  summary: string;
+  key_findings: string[];
+  watch_items: string[];
+  next_actions: string[];
+  safety_notes: string[];
+};
+
 const appCss = `
 @keyframes pulse-ring {
   0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(0, 212, 170, 0.4); }
@@ -210,14 +220,12 @@ const appCss = `
 .lt-grid-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .lt-grid-half { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .lt-nutrition { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-.lt-bottom { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(13, 17, 23, 0.94); border-top: 1px solid #1F2937; padding: 12px 32px; display: flex; align-items: center; justify-content: space-between; gap: 16px; backdrop-filter: blur(20px); z-index: 60; }
 @media (max-width: 920px) {
   .lt-topbar { align-items: flex-start; flex-direction: column; padding: 18px; }
   .lt-tabs { justify-content: flex-start; width: 100%; overflow-x: auto; flex-wrap: nowrap; }
   .lt-user-pill { display: none; }
   .lt-page { padding: 28px 18px 94px; }
   .lt-grid-two, .lt-nutrition, .lt-grid-cards, .lt-grid-half { grid-template-columns: 1fr; }
-  .lt-bottom { align-items: flex-start; flex-direction: column; padding: 12px 18px; }
 }
 `;
 
@@ -699,7 +707,6 @@ export function TwinPage() {
           biomarkers={biomarkers}
           intakeBiomarkers={intakeBiomarkers}
           updateBio={updateBio}
-          bioAge={bioAge}
           onAddDetails={() => navigate("/")}
         />
       ) : null}
@@ -712,21 +719,6 @@ export function TwinPage() {
         <TwinTab age={age} targetAge={targetAge} bioAge={bioAge} twinAge={twinAge} clampedScore={clampedScore} />
       ) : null}
 
-      {activeTab !== "biomarkers" ? (
-        <div className="lt-bottom">
-          <div style={{ color: COLORS.textMuted, fontSize: 12 }}>
-            Twin match: <strong style={{ color: COLORS.accent }}>{clampedScore}%</strong> | Bio age:{" "}
-            <strong style={{ color: COLORS.gold }}>{bioAge}</strong> | Target at {targetAge}:{" "}
-            <strong style={{ color: COLORS.accent }}>bio {twinAge}</strong>
-          </div>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <GhostButton>Edit Data</GhostButton>
-            <PrimaryButton>
-              Share Progress <Share2 size={16} />
-            </PrimaryButton>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1466,17 +1458,18 @@ function BiomarkersTab({
   biomarkers,
   intakeBiomarkers,
   updateBio,
-  bioAge,
   onAddDetails,
 }: {
   biomarkers: Biomarkers;
   intakeBiomarkers: IntakeBiomarkers;
   updateBio: (key: BiomarkerKey, value: number) => void;
-  bioAge: number;
   onAddDetails: () => void;
 }) {
   const [updateMessage, setUpdateMessage] = useState("");
   const [savedBiomarkers, setSavedBiomarkers] = useState<IntakeBiomarkers>(intakeBiomarkers);
+  const [analysis, setAnalysis] = useState<BiomarkerAnalysisResponse | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisMessage, setAnalysisMessage] = useState("");
   const hasAnyDetails = [
     intakeBiomarkers.hba1c,
     intakeBiomarkers.systolic,
@@ -1488,6 +1481,43 @@ function BiomarkersTab({
   useEffect(() => {
     setSavedBiomarkers(intakeBiomarkers);
   }, [intakeBiomarkers]);
+
+  useEffect(() => {
+    if (!hasAnyDetails) return;
+    let cancelled = false;
+
+    const loadAnalysis = async () => {
+      setAnalysisLoading(true);
+      setAnalysisMessage("");
+      try {
+        const userId = await getSingleUserId();
+        if (!userId) {
+          setAnalysisMessage("Submit intake details first to generate biomarker analysis.");
+          return;
+        }
+        const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/biomarker-analysis`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ metrics: buildMetricsPayload(biomarkers) }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const payload = (await response.json()) as BiomarkerAnalysisResponse;
+        if (!cancelled) setAnalysis(payload);
+      } catch {
+        if (!cancelled) setAnalysisMessage("Could not generate biomarker analysis right now.");
+      } finally {
+        if (!cancelled) setAnalysisLoading(false);
+      }
+    };
+
+    loadAnalysis();
+    return () => {
+      cancelled = true;
+    };
+    // Analysis refreshes after saved biomarker source changes; manual edits can be saved first.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAnyDetails, savedBiomarkers]);
+
   const hasBiomarkerChanges =
     (typeof savedBiomarkers.hba1c === "number" && biomarkers.hba1c !== savedBiomarkers.hba1c) ||
     (typeof savedBiomarkers.systolic === "number" && biomarkers.systolic !== savedBiomarkers.systolic) ||
@@ -1604,13 +1634,45 @@ function BiomarkersTab({
       >
         <div style={{ fontWeight: 700, color: COLORS.accent, marginBottom: 8 }}>
           <Sparkles size={16} style={{ display: "inline-block", marginRight: 8, verticalAlign: "text-bottom" }} />
-          AI Analysis
+          AI Analysis {analysis?.generated_by === "openai" ? `| ${analysis.model_used}` : analysis ? "| local fallback" : ""}
         </div>
-        <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: 0, lineHeight: 1.7 }}>
-          Your biomarker panel is now focused on metabolic control, blood pressure, and vitamin status.{" "}
-          <strong style={{ color: COLORS.textPrimary }}>Projected bio age: {bioAge}.</strong> Keeping these markers near
-          their target zones improves your twin match.
-        </p>
+        {analysisLoading ? (
+          <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: 0, lineHeight: 1.7 }}>
+            Generating current biomarker analysis...
+          </p>
+        ) : analysis ? (
+          <div style={{ color: COLORS.textSecondary, fontSize: 14, lineHeight: 1.7 }}>
+            <p style={{ margin: "0 0 10px" }}>{analysis.summary}</p>
+            {analysis.key_findings.length ? (
+              <div style={{ marginBottom: 10 }}>
+                <strong style={{ color: COLORS.textPrimary }}>Key findings</strong>
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                  {analysis.key_findings.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {analysis.watch_items.length ? (
+              <div style={{ marginBottom: 10 }}>
+                <strong style={{ color: COLORS.textPrimary }}>Watch items</strong>
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                  {analysis.watch_items.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+            {analysis.next_actions.length ? (
+              <div>
+                <strong style={{ color: COLORS.textPrimary }}>Next actions</strong>
+                <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                  {analysis.next_actions.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: 0, lineHeight: 1.7 }}>
+            {analysisMessage || "Add biomarker values to generate current-situation analysis."}
+          </p>
+        )}
       </div>
     </div>
   );

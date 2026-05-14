@@ -15,6 +15,8 @@ from app.schemas.adaptive_plan import (
     AdaptiveMetricsInput,
     AdaptivePlanRequest,
     AdaptivePlanResponse,
+    BiomarkerAnalysisRequest,
+    BiomarkerAnalysisResponse,
     BiomarkerInput,
     NutritionPlanResponse,
     PlanFeedbackInput,
@@ -412,6 +414,16 @@ def _nutrition_system_prompt() -> str:
     )
 
 
+def _biomarker_system_prompt() -> str:
+    return (
+        "You are LifeTwin's biomarker analyst. Explain the user's current biomarker situation only. "
+        "Do not mention projected age, biological age, twin matching, longevity score, or future twin. "
+        "Keep it concise, practical, non-diagnostic, and focused on what appears in the provided values. "
+        "If data is limited, say so. Suggest only wellness next steps and clinician follow-up where appropriate. "
+        f"Safety principle: {MEDICAL_DISCLAIMER}"
+    )
+
+
 def _output_text(response: dict[str, Any]) -> str:
     if isinstance(response.get("output_text"), str):
         return response["output_text"]
@@ -424,7 +436,12 @@ def _output_text(response: dict[str, Any]) -> str:
     raise ValueError("OpenAI response did not contain text output.")
 
 
-def _openai_response_schema(response_model: type[AdaptivePlanResponse] | type[RoutinePlanResponse] | type[NutritionPlanResponse]) -> dict[str, Any]:
+def _openai_response_schema(
+    response_model: type[AdaptivePlanResponse]
+    | type[RoutinePlanResponse]
+    | type[NutritionPlanResponse]
+    | type[BiomarkerAnalysisResponse],
+) -> dict[str, Any]:
     schema = response_model.model_json_schema()
 
     def normalize(node: Any) -> None:
@@ -564,6 +581,51 @@ def _openai_structured_response(
     return response_model.model_validate(raw_plan)
 
 
+def _fallback_biomarker_analysis(user_id: UUID, metrics: AdaptiveMetricsInput) -> BiomarkerAnalysisResponse:
+    biomarkers = metrics.biomarkers or BiomarkerInput()
+    key_findings: list[str] = []
+    watch_items: list[str] = []
+    next_actions: list[str] = []
+
+    if biomarkers.hba1c is not None:
+        key_findings.append(
+            f"HbA1c is {biomarkers.hba1c:g}%, which is useful for understanding current glucose control."
+        )
+        if biomarkers.hba1c >= 5.7:
+            watch_items.append("HbA1c is above the usual normal range; discuss repeat testing and risk context with a clinician.")
+            next_actions.append("Prioritize protein, fiber, walking after meals, and lower-sugar choices this week.")
+    if biomarkers.bp_systolic is not None and biomarkers.bp_diastolic is not None:
+        key_findings.append(f"Blood pressure is {biomarkers.bp_systolic}/{biomarkers.bp_diastolic} mmHg.")
+        if biomarkers.bp_systolic >= 130 or biomarkers.bp_diastolic >= 85:
+            watch_items.append("Blood pressure is worth monitoring with repeated rested readings.")
+            next_actions.append("Reduce salty/fried meals, improve sleep, and keep daily walking consistent.")
+    if biomarkers.vitamin_d is not None:
+        key_findings.append(f"Vitamin D is {biomarkers.vitamin_d:g} ng/mL.")
+        if biomarkers.vitamin_d < 30:
+            watch_items.append("Vitamin D appears low or insufficient.")
+            next_actions.append("Use sunlight, vitamin-D foods, and clinician-guided supplementation if needed.")
+    if biomarkers.vitamin_b12 is not None:
+        key_findings.append(f"Vitamin B12 is {biomarkers.vitamin_b12:g} pg/mL.")
+        if biomarkers.vitamin_b12 < 350:
+            watch_items.append("B12 is low-normal or low depending on the lab range.")
+            next_actions.append("Add B12-rich foods and discuss supplementation/recheck timing with a clinician.")
+
+    if not key_findings:
+        key_findings.append("Only limited biomarker data is available right now.")
+        next_actions.append("Add recent lab values to get a more useful interpretation.")
+
+    return BiomarkerAnalysisResponse(
+        user_id=user_id,
+        generated_by="fallback",
+        model_used="deterministic-rule-engine",
+        summary="Current biomarker review based on the values available. This is wellness guidance, not a diagnosis.",
+        key_findings=key_findings[:5],
+        watch_items=watch_items[:5],
+        next_actions=next_actions[:5],
+        safety_notes=[MEDICAL_DISCLAIMER],
+    )
+
+
 def generate_adaptive_plan(db: Session, user_id: UUID, payload: AdaptivePlanRequest) -> AdaptivePlanResponse:
     plan_date = payload.plan_date or date.today()
     metrics = _metrics_from_storage(db, user_id, payload.metrics)
@@ -677,6 +739,31 @@ def generate_nutrition_plan(db: Session, user_id: UUID, payload: AdaptivePlanReq
         return response if isinstance(response, NutritionPlanResponse) else NutritionPlanResponse.model_validate(response)
     except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError):
         return _nutrition_from_plan(_fallback_adaptive_plan(user_id, plan_date, metrics, feedback))
+
+
+def analyze_biomarkers(db: Session, user_id: UUID, payload: BiomarkerAnalysisRequest) -> BiomarkerAnalysisResponse:
+    metrics = _metrics_from_storage(db, user_id, payload.metrics)
+    try:
+        response = _openai_structured_response(
+            user_id=user_id,
+            plan_date=date.today(),
+            metrics=metrics,
+            feedback=None,
+            response_model=BiomarkerAnalysisResponse,
+            schema_name="lifetwin_biomarker_analysis",
+            instructions=_biomarker_system_prompt(),
+            requirements=[
+                "Explain only current biomarker situation.",
+                "Do not mention projected age, biological age, twin, twin match, alignment, or timeline.",
+                "Keep summary under 2 sentences.",
+                "Each finding/action should be simple and user-readable.",
+                "Use clinician follow-up language for abnormal or uncertain values.",
+            ],
+            max_output_tokens=2500,
+        )
+        return response if isinstance(response, BiomarkerAnalysisResponse) else BiomarkerAnalysisResponse.model_validate(response)
+    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError):
+        return _fallback_biomarker_analysis(user_id, metrics)
 
 
 def save_adaptive_checkin_feedback(db: Session, user_id: UUID, payload: AdaptiveCheckinRequest) -> None:

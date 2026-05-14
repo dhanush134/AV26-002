@@ -9,6 +9,8 @@ from app.schemas.adaptive_plan import (
     AdaptiveCheckinRequest,
     AdaptivePlanRequest,
     AdaptivePlanResponse,
+    BiomarkerAnalysisRequest,
+    BiomarkerAnalysisResponse,
     NutritionPlanResponse,
     RoutinePlanResponse,
 )
@@ -30,6 +32,11 @@ def generate_routine_plan(user_id: UUID, payload: AdaptivePlanRequest, db: Sessi
 @router.post("/users/{user_id}/adaptive-plan/nutrition", response_model=NutritionPlanResponse)
 def generate_nutrition_plan(user_id: UUID, payload: AdaptivePlanRequest, db: Session = Depends(get_db)):
     return adaptive_plan_engine.generate_nutrition_plan(db, user_id, payload)
+
+
+@router.post("/users/{user_id}/adaptive-plan/biomarker-analysis", response_model=BiomarkerAnalysisResponse)
+def analyze_biomarkers(user_id: UUID, payload: BiomarkerAnalysisRequest, db: Session = Depends(get_db)):
+    return adaptive_plan_engine.analyze_biomarkers(db, user_id, payload)
 
 
 @router.post("/users/{user_id}/adaptive-plan/checkin-log", response_model=AdaptiveCheckinLogResponse, status_code=201)

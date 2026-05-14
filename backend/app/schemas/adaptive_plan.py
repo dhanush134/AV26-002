@@ -177,3 +177,18 @@ class NutritionPlanResponse(StrictModel):
 class AdaptiveCheckinLogResponse(StrictModel):
     user_id: UUID
     saved: bool
+
+
+class BiomarkerAnalysisRequest(StrictModel):
+    metrics: AdaptiveMetricsInput | None = None
+
+
+class BiomarkerAnalysisResponse(StrictModel):
+    user_id: UUID
+    generated_by: Literal["openai", "fallback"]
+    model_used: str
+    summary: str
+    key_findings: list[str] = Field(min_length=1, max_length=5)
+    watch_items: list[str] = Field(default_factory=list, max_length=5)
+    next_actions: list[str] = Field(default_factory=list, max_length=5)
+    safety_notes: list[str] = Field(default_factory=lambda: [MEDICAL_DISCLAIMER], max_length=4)
