@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_env: str = Field(default="development", alias="APP_ENV")
     database_url: str = Field(alias="DATABASE_URL")
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list, alias="CORS_ORIGINS")
+    internal_sync_secret: str | None = Field(default=None, alias="INTERNAL_SYNC_SECRET")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
