@@ -1,7 +1,8 @@
 import { NavLink } from "react-router-dom";
-import { ActivitySquare, FileHeart, Gauge, HeartPulse, Radar, Rotate3D, Watch } from "lucide-react";
+import { ActivitySquare, FileHeart, Gauge, HeartPulse, Home, Radar, Rotate3D, Watch } from "lucide-react";
 
 const navItems = [
+  { to: "/", label: "Home", icon: Home },
   { to: "/dashboard", label: "Dashboard", icon: Gauge },
   { to: "/twin", label: "Digital Twin", icon: Rotate3D },
   { to: "/simulation", label: "Simulation", icon: Radar },

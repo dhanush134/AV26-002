@@ -6,6 +6,7 @@ import { apiBaseUrl } from "../../api/client";
 import { Button } from "../ui/Button";
 
 const mobileNav = [
+  ["Home", "/"],
   ["Dashboard", "/dashboard"],
   ["Twin", "/twin"],
   ["Sim", "/simulation"],
