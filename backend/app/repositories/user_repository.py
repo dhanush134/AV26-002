@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.user import User
-from app.schemas.user import UserCreate
+from app.schemas.user import UserCreate, UserUpdate
 
 
 def create_user(db: Session, payload: UserCreate) -> User:
@@ -30,3 +30,18 @@ def ensure_user(db: Session, user_id: UUID) -> User:
 
         raise NotFoundError("User not found")
     return user
+
+
+def update_user(db: Session, user_id: UUID, payload: UserUpdate) -> User:
+    user = ensure_user(db, user_id)
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(user, key, value)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def delete_user(db: Session, user_id: UUID) -> None:
+    user = ensure_user(db, user_id)
+    db.delete(user)
+    db.commit()

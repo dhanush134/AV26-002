@@ -22,6 +22,9 @@ const COLORS = {
 };
 
 const TABS = ["routine", "biomarkers", "nutrition", "twin"] as const;
+const INTAKE_STORAGE_KEY = "lifetwin_intake_draft_v1";
+const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type Tab = (typeof TABS)[number];
 type BiomarkerKey =
@@ -39,6 +42,36 @@ type BiomarkerKey =
   | "steps";
 
 type Biomarkers = Record<BiomarkerKey, number>;
+
+type IntakeDraft = {
+  form?: {
+    hba1c?: string;
+    bpSystolic?: string;
+    bpDiastolic?: string;
+    vitaminD?: string;
+    vitaminB12?: string;
+  };
+};
+
+type ApiUser = {
+  id: string;
+};
+
+type ApiLabReport = {
+  hba1c?: number | null;
+  bp_systolic?: number | null;
+  bp_diastolic?: number | null;
+  vitamin_d?: number | null;
+  vitamin_b12?: number | null;
+};
+
+type IntakeBiomarkers = {
+  hba1c?: number;
+  systolic?: number;
+  diastolic?: number;
+  vitaminD?: number;
+  b12?: number;
+};
 
 interface RoutineItem {
   time: string;
@@ -103,11 +136,63 @@ const cardStyle: CSSProperties = {
   borderRadius: 16,
 };
 
+function numberFromDraft(value: string | undefined) {
+  if (!value?.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function loadIntakeBiomarkers(): IntakeBiomarkers {
+  try {
+    const saved = localStorage.getItem(INTAKE_STORAGE_KEY);
+    if (!saved) return {};
+    const parsed = JSON.parse(saved) as IntakeDraft;
+    const form = parsed.form;
+    if (!form) return {};
+    return {
+      hba1c: numberFromDraft(form.hba1c),
+      systolic: numberFromDraft(form.bpSystolic),
+      diastolic: numberFromDraft(form.bpDiastolic),
+      vitaminD: numberFromDraft(form.vitaminD),
+      b12: numberFromDraft(form.vitaminB12),
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function getSingleUserId() {
+  const existingUserId = localStorage.getItem(USER_STORAGE_KEY);
+  if (existingUserId) return existingUserId;
+  const response = await fetch(`${API_BASE_URL}/api/v1/users?limit=1`);
+  if (!response.ok) return undefined;
+  const users = (await response.json()) as ApiUser[];
+  const userId = users[0]?.id;
+  if (userId) localStorage.setItem(USER_STORAGE_KEY, userId);
+  return userId;
+}
+
+async function fetchLatestBiomarkersFromDb(): Promise<IntakeBiomarkers | undefined> {
+  const userId = await getSingleUserId();
+  if (!userId) return undefined;
+  const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/lab-reports/latest`);
+  if (!response.ok) return undefined;
+  const report = (await response.json()) as ApiLabReport;
+  return {
+    hba1c: report.hba1c ?? undefined,
+    systolic: report.bp_systolic ?? undefined,
+    diastolic: report.bp_diastolic ?? undefined,
+    vitaminD: report.vitamin_d ?? undefined,
+    b12: report.vitamin_b12 ?? undefined,
+  };
+}
+
 export function TwinPage() {
   const navigate = useNavigate();
   const [age] = useState(34);
   const [targetAge] = useState(65);
-  const [activeTab, setActiveTab] = useState<Tab>("twin");
+  const [activeTab, setActiveTab] = useState<Tab>("biomarkers");
+  const [intakeBiomarkers, setIntakeBiomarkers] = useState<IntakeBiomarkers>(() => loadIntakeBiomarkers());
   const [biomarkers, setBiomarkers] = useState<Biomarkers>({
     ldl: 128,
     hdl: 48,
@@ -147,6 +232,41 @@ export function TwinPage() {
   );
 
   const doneCount = routine.filter((item) => item.done).length;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateBiomarkers = async () => {
+      const latest = await fetchLatestBiomarkersFromDb();
+      if (!latest || cancelled) return;
+      setIntakeBiomarkers(latest);
+      setBiomarkers((current) => ({
+        ...current,
+        hba1c: latest.hba1c ?? current.hba1c,
+        systolic: latest.systolic ?? current.systolic,
+        diastolic: latest.diastolic ?? current.diastolic,
+        vitaminD: latest.vitaminD ?? current.vitaminD,
+        b12: latest.b12 ?? current.b12,
+      }));
+    };
+
+    hydrateBiomarkers();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setBiomarkers((current) => ({
+      ...current,
+      hba1c: intakeBiomarkers.hba1c ?? current.hba1c,
+      systolic: intakeBiomarkers.systolic ?? current.systolic,
+      diastolic: intakeBiomarkers.diastolic ?? current.diastolic,
+      vitaminD: intakeBiomarkers.vitaminD ?? current.vitaminD,
+      b12: intakeBiomarkers.b12 ?? current.b12,
+    }));
+  }, [intakeBiomarkers]);
+
   const matchScore = Math.round(
     (doneCount / routine.length) * 100 * 0.4 +
       (biomarkers.sleepHrs / 8) * 100 * 0.2 +
@@ -182,7 +302,15 @@ export function TwinPage() {
         />
       ) : null}
 
-      {activeTab === "biomarkers" ? <BiomarkersTab biomarkers={biomarkers} updateBio={updateBio} bioAge={bioAge} /> : null}
+      {activeTab === "biomarkers" ? (
+        <BiomarkersTab
+          biomarkers={biomarkers}
+          intakeBiomarkers={intakeBiomarkers}
+          updateBio={updateBio}
+          bioAge={bioAge}
+          onAddDetails={() => navigate("/")}
+        />
+      ) : null}
 
       {activeTab === "nutrition" ? <NutritionTab age={age} supplements={supplements} /> : null}
 
@@ -190,19 +318,21 @@ export function TwinPage() {
         <TwinTab age={age} targetAge={targetAge} bioAge={bioAge} twinAge={twinAge} clampedScore={clampedScore} />
       ) : null}
 
-      <div className="lt-bottom">
-        <div style={{ color: COLORS.textMuted, fontSize: 12 }}>
-          Twin match: <strong style={{ color: COLORS.accent }}>{clampedScore}%</strong> | Bio age:{" "}
-          <strong style={{ color: COLORS.gold }}>{bioAge}</strong> | Target at {targetAge}:{" "}
-          <strong style={{ color: COLORS.accent }}>bio {twinAge}</strong>
+      {activeTab !== "biomarkers" ? (
+        <div className="lt-bottom">
+          <div style={{ color: COLORS.textMuted, fontSize: 12 }}>
+            Twin match: <strong style={{ color: COLORS.accent }}>{clampedScore}%</strong> | Bio age:{" "}
+            <strong style={{ color: COLORS.gold }}>{bioAge}</strong> | Target at {targetAge}:{" "}
+            <strong style={{ color: COLORS.accent }}>bio {twinAge}</strong>
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <GhostButton>Edit Data</GhostButton>
+            <PrimaryButton>
+              Share Progress <Share2 size={16} />
+            </PrimaryButton>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <GhostButton>Edit Data</GhostButton>
-          <PrimaryButton>
-            Share Progress <Share2 size={16} />
-          </PrimaryButton>
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -318,6 +448,98 @@ function BiomarkerInput({
           Optimal: {optimal} {unit}
         </span>
         <span style={{ color: COLORS.textMuted, fontSize: 10 }}>{max}</span>
+      </div>
+    </div>
+  );
+}
+
+function BloodPressureInput({
+  systolic,
+  diastolic,
+  onSystolicChange,
+  onDiastolicChange,
+}: {
+  systolic: number;
+  diastolic: number;
+  onSystolicChange: (value: number) => void;
+  onDiastolicChange: (value: number) => void;
+}) {
+  const systolicDiff = Math.abs(systolic - 120);
+  const diastolicDiff = Math.abs(diastolic - 80);
+  const combinedDiff = systolicDiff + diastolicDiff;
+  const signalColor = combinedDiff <= 10 ? COLORS.accent : combinedDiff <= 24 ? COLORS.gold : COLORS.red;
+  const pct = Math.min(100, Math.max(0, ((systolic - 90) / (180 - 90)) * 100));
+  const optPct = Math.min(100, Math.max(0, ((120 - 90) / (180 - 90)) * 100));
+
+  return (
+    <div style={{ ...cardStyle, padding: "16px 20px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, marginBottom: 10 }}>
+        <div>
+          <div style={{ color: COLORS.textPrimary, fontWeight: 700, fontSize: 14 }}>BP</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 11, marginTop: 2 }}>Normal target around 120/80</div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: signalColor, boxShadow: `0 0 8px ${signalColor}` }} />
+          <input
+            aria-label="Systolic BP"
+            type="number"
+            value={systolic}
+            onChange={(event) => onSystolicChange(Number(event.target.value))}
+            style={{
+              background: COLORS.surface,
+              border: `1px solid ${COLORS.border}`,
+              color: COLORS.textPrimary,
+              borderRadius: 8,
+              padding: "4px 8px",
+              width: 62,
+              fontSize: 14,
+              fontWeight: 800,
+              textAlign: "right",
+              outline: "none",
+            }}
+          />
+          <span style={{ color: COLORS.textMuted, fontSize: 13, fontWeight: 800 }}>/</span>
+          <input
+            aria-label="Diastolic BP"
+            type="number"
+            value={diastolic}
+            onChange={(event) => onDiastolicChange(Number(event.target.value))}
+            style={{
+              background: COLORS.surface,
+              border: `1px solid ${COLORS.border}`,
+              color: COLORS.textPrimary,
+              borderRadius: 8,
+              padding: "4px 8px",
+              width: 62,
+              fontSize: 14,
+              fontWeight: 800,
+              textAlign: "right",
+              outline: "none",
+            }}
+          />
+          <span style={{ color: COLORS.textMuted, fontSize: 11, minWidth: 34 }}>mmHg</span>
+        </div>
+      </div>
+      <div style={{ position: "relative", height: 8 }}>
+        <ProgressBar value={pct} color={signalColor} />
+        <div
+          title="Optimal: 120/80"
+          style={{
+            position: "absolute",
+            top: -2,
+            left: `${optPct}%`,
+            width: 2,
+            height: 12,
+            background: COLORS.accent + "AA",
+            borderRadius: 2,
+            transform: "translateX(-50%)",
+          }}
+        />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5 }}>
+        <span style={{ color: COLORS.textMuted, fontSize: 10 }}>90</span>
+        <span style={{ color: COLORS.accent, fontSize: 10 }}>Optimal: 120/80 mmHg</span>
+        <span style={{ color: COLORS.textMuted, fontSize: 10 }}>180</span>
       </div>
     </div>
   );
@@ -602,23 +824,25 @@ function SectionLabel({ children, color = COLORS.accent }: { children: ReactNode
   );
 }
 
-function PrimaryButton({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+function PrimaryButton({ children, onClick, disabled = false }: { children: ReactNode; onClick?: () => void; disabled?: boolean }) {
   return (
     <button
+      disabled={disabled}
       onClick={onClick}
       style={{
-        background: `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.purple})`,
+        background: disabled ? COLORS.border : `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.purple})`,
         border: "none",
-        color: COLORS.bg,
+        color: disabled ? COLORS.textMuted : COLORS.bg,
         borderRadius: 14,
         padding: "14px 28px",
         fontSize: 14,
         fontWeight: 900,
-        cursor: "pointer",
-        boxShadow: `0 8px 30px ${COLORS.accent}33`,
+        cursor: disabled ? "not-allowed" : "pointer",
+        boxShadow: disabled ? "none" : `0 8px 30px ${COLORS.accent}33`,
         display: "inline-flex",
         alignItems: "center",
         gap: 8,
+        opacity: disabled ? 0.7 : 1,
       }}
     >
       {children}
@@ -744,30 +968,137 @@ function RoutineTab({
   );
 }
 
-function BiomarkersTab({ biomarkers, updateBio, bioAge }: { biomarkers: Biomarkers; updateBio: (key: BiomarkerKey, value: number) => void; bioAge: number }) {
+function BiomarkersTab({
+  biomarkers,
+  intakeBiomarkers,
+  updateBio,
+  bioAge,
+  onAddDetails,
+}: {
+  biomarkers: Biomarkers;
+  intakeBiomarkers: IntakeBiomarkers;
+  updateBio: (key: BiomarkerKey, value: number) => void;
+  bioAge: number;
+  onAddDetails: () => void;
+}) {
+  const [updateMessage, setUpdateMessage] = useState("");
+  const [savedBiomarkers, setSavedBiomarkers] = useState<IntakeBiomarkers>(intakeBiomarkers);
+  const hasAnyDetails = [
+    intakeBiomarkers.hba1c,
+    intakeBiomarkers.systolic,
+    intakeBiomarkers.diastolic,
+    intakeBiomarkers.vitaminD,
+    intakeBiomarkers.b12,
+  ].some((value) => typeof value === "number");
+
+  useEffect(() => {
+    setSavedBiomarkers(intakeBiomarkers);
+  }, [intakeBiomarkers]);
+  const hasBiomarkerChanges =
+    (typeof savedBiomarkers.hba1c === "number" && biomarkers.hba1c !== savedBiomarkers.hba1c) ||
+    (typeof savedBiomarkers.systolic === "number" && biomarkers.systolic !== savedBiomarkers.systolic) ||
+    (typeof savedBiomarkers.diastolic === "number" && biomarkers.diastolic !== savedBiomarkers.diastolic) ||
+    (typeof savedBiomarkers.vitaminD === "number" && biomarkers.vitaminD !== savedBiomarkers.vitaminD) ||
+    (typeof savedBiomarkers.b12 === "number" && biomarkers.b12 !== savedBiomarkers.b12);
+
+  const saveBiomarkerUpdates = async () => {
+    try {
+      const saved = localStorage.getItem(INTAKE_STORAGE_KEY);
+      const parsed = saved ? (JSON.parse(saved) as IntakeDraft) : {};
+      const userId = await getSingleUserId();
+      if (!userId) {
+        setUpdateMessage("Submit details on the home page first.");
+        return;
+      }
+      const form = {
+        ...(parsed.form || {}),
+        hba1c: String(biomarkers.hba1c || ""),
+        bpSystolic: String(biomarkers.systolic || ""),
+        bpDiastolic: String(biomarkers.diastolic || ""),
+        vitaminD: String(biomarkers.vitaminD || ""),
+        vitaminB12: String(biomarkers.b12 || ""),
+      };
+      const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/biomarkers`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hba1c: biomarkers.hba1c,
+          bp_systolic: biomarkers.systolic,
+          bp_diastolic: biomarkers.diastolic,
+          vitamin_d: biomarkers.vitaminD,
+          vitamin_b12: biomarkers.b12,
+        }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Could not update biomarker values.");
+      }
+      localStorage.setItem(INTAKE_STORAGE_KEY, JSON.stringify({ ...parsed, form }));
+      setSavedBiomarkers({
+        hba1c: biomarkers.hba1c,
+        systolic: biomarkers.systolic,
+        diastolic: biomarkers.diastolic,
+        vitaminD: biomarkers.vitaminD,
+        b12: biomarkers.b12,
+      });
+      setUpdateMessage("Biomarker values updated.");
+    } catch {
+      setUpdateMessage("Could not update biomarker values.");
+    }
+  };
+
+  if (!hasAnyDetails) {
+    return (
+      <div className="lt-page" style={{ maxWidth: 760 }}>
+        <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: "0 0 8px" }}>Your Biomarker Panel</h2>
+        <p style={{ color: COLORS.textSecondary, marginBottom: 24, fontSize: 14 }}>
+          Add HbA1c, BP, Vitamin D, and Vitamin B12 details to see how far each value is from the normal range.
+        </p>
+        <div style={{ ...cardStyle, padding: 28, borderRadius: 20, textAlign: "center" }}>
+          <div style={{ color: COLORS.gold, marginBottom: 12 }}>
+            <TestTube2 size={34} />
+          </div>
+          <h3 style={{ color: COLORS.textPrimary, fontSize: 20, fontWeight: 900, margin: "0 0 8px" }}>No biomarker details yet</h3>
+          <p style={{ color: COLORS.textSecondary, fontSize: 14, lineHeight: 1.7, margin: "0 auto 20px", maxWidth: 480 }}>
+            Enter the following details first: HbA1c, BP, Vitamin D, and Vitamin B12.
+          </p>
+          <PrimaryButton onClick={onAddDetails}>Add biomarker details</PrimaryButton>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="lt-page" style={{ maxWidth: 900 }}>
       <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: "0 0 8px" }}>Your Biomarker Panel</h2>
       <p style={{ color: COLORS.textSecondary, marginBottom: 32, fontSize: 14 }}>
-        Enter your latest lab values. The twin recalibrates in real-time.
+        These values come from your intake. Each tile shows how far the value sits from the normal target.
       </p>
 
-      <BiomarkerSection color={COLORS.accent} title="Lipid Profile" icon={<HeartPulse size={14} />}>
-        <BiomarkerInput label="LDL Cholesterol" value={biomarkers.ldl} onChange={(value) => updateBio("ldl", value)} unit="mg/dL" min={50} max={220} optimal={90} sublabel="Target <100 for longevity" />
-        <BiomarkerInput label="HDL Cholesterol" value={biomarkers.hdl} onChange={(value) => updateBio("hdl", value)} unit="mg/dL" min={20} max={100} optimal={65} sublabel="Higher is better" />
-        <BiomarkerInput label="Triglycerides" value={biomarkers.triglycerides} onChange={(value) => updateBio("triglycerides", value)} unit="mg/dL" min={50} max={400} optimal={100} sublabel="Target <100 optimal" />
+      <BiomarkerSection color={COLORS.accent} title="Biomarkers" icon={<TestTube2 size={14} />}>
+        {typeof intakeBiomarkers.hba1c === "number" ? (
+          <BiomarkerInput label="HbA1c" value={biomarkers.hba1c} onChange={(value) => { updateBio("hba1c", value); setUpdateMessage(""); }} unit="%" min={4} max={9} optimal={5.0} sublabel="Normal target around 5.0%" />
+        ) : null}
+        {typeof intakeBiomarkers.systolic === "number" && typeof intakeBiomarkers.diastolic === "number" ? (
+          <BloodPressureInput
+            systolic={biomarkers.systolic}
+            diastolic={biomarkers.diastolic}
+            onSystolicChange={(value) => { updateBio("systolic", value); setUpdateMessage(""); }}
+            onDiastolicChange={(value) => { updateBio("diastolic", value); setUpdateMessage(""); }}
+          />
+        ) : null}
+        {typeof intakeBiomarkers.vitaminD === "number" ? (
+          <BiomarkerInput label="Vitamin D" value={biomarkers.vitaminD} onChange={(value) => { updateBio("vitaminD", value); setUpdateMessage(""); }} unit="ng/mL" min={5} max={100} optimal={60} sublabel="Normal target around 60" />
+        ) : null}
+        {typeof intakeBiomarkers.b12 === "number" ? (
+          <BiomarkerInput label="Vitamin B12" value={biomarkers.b12} onChange={(value) => { updateBio("b12", value); setUpdateMessage(""); }} unit="pg/mL" min={100} max={1200} optimal={700} sublabel="Normal target around 700" />
+        ) : null}
       </BiomarkerSection>
 
-      <BiomarkerSection color={COLORS.gold} title="Vitamins & Hormones" icon={<Sun size={14} />}>
-        <BiomarkerInput label="Vitamin D" value={biomarkers.vitaminD} onChange={(value) => updateBio("vitaminD", value)} unit="ng/mL" min={5} max={100} optimal={60} sublabel="Severely deficient <20" />
-        <BiomarkerInput label="Vitamin B12" value={biomarkers.b12} onChange={(value) => updateBio("b12", value)} unit="pg/mL" min={100} max={1200} optimal={700} sublabel="Optimal 600-800" />
-      </BiomarkerSection>
-
-      <BiomarkerSection color={COLORS.purple} title="Metabolic & Organ" icon={<Activity size={14} />}>
-        <BiomarkerInput label="HbA1c" value={biomarkers.hba1c} onChange={(value) => updateBio("hba1c", value)} unit="%" min={4} max={9} optimal={5.0} sublabel="Optimal <5.2%" />
-        <BiomarkerInput label="ALT (Liver)" value={biomarkers.alt} onChange={(value) => updateBio("alt", value)} unit="U/L" min={5} max={100} optimal={20} sublabel="Optimal 10-25" />
-        <BiomarkerInput label="Creatinine" value={biomarkers.creatinine} onChange={(value) => updateBio("creatinine", value)} unit="mg/dL" min={0.5} max={2.5} optimal={0.9} sublabel="Kidney function marker" />
-      </BiomarkerSection>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", marginBottom: 24 }}>
+        <PrimaryButton onClick={saveBiomarkerUpdates} disabled={!hasBiomarkerChanges}>Update values</PrimaryButton>
+        {updateMessage ? <span style={{ color: COLORS.accent, fontSize: 13, fontWeight: 700 }}>{updateMessage}</span> : null}
+      </div>
 
       <div
         style={{
@@ -782,11 +1113,9 @@ function BiomarkersTab({ biomarkers, updateBio, bioAge }: { biomarkers: Biomarke
           AI Analysis
         </div>
         <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: 0, lineHeight: 1.7 }}>
-          Your lipid panel shows elevated LDL (128) and borderline triglycerides (160) - classic pattern of refined carb
-          excess plus sedentary load. Critical Vitamin D deficiency (22 ng/mL) is suppressing immune function, testosterone,
-          and longevity pathways. B12 at 310 pg/mL is suboptimal for neurological health (target 600+).{" "}
-          <strong style={{ color: COLORS.textPrimary }}>Projected bio age: {bioAge}.</strong> With protocol adherence,
-          10-year longevity gain is achievable.
+          Your biomarker panel is now focused on metabolic control, blood pressure, and vitamin status.{" "}
+          <strong style={{ color: COLORS.textPrimary }}>Projected bio age: {bioAge}.</strong> Keeping these markers near
+          their target zones improves your twin match.
         </p>
       </div>
     </div>

@@ -2,6 +2,7 @@ from datetime import date, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from pydantic import model_validator
 
 from app.schemas.common import ORMModel
 
@@ -49,3 +50,18 @@ class LabReportResponse(LabReportBase, ORMModel):
     user_id: UUID
     created_at: datetime
     updated_at: datetime
+
+
+class BiomarkerValuesUpsert(BaseModel):
+    hba1c: float | None = Field(default=None, ge=2, le=20)
+    bp_systolic: int | None = Field(default=None, ge=40, le=260)
+    bp_diastolic: int | None = Field(default=None, ge=30, le=180)
+    vitamin_d: float | None = Field(default=None, ge=0, le=200)
+    vitamin_b12: float | None = Field(default=None, ge=0, le=3000)
+    notes: str | None = None
+
+    @model_validator(mode="after")
+    def validate_bp_pair(self) -> "BiomarkerValuesUpsert":
+        if (self.bp_systolic is None) != (self.bp_diastolic is None):
+            raise ValueError("Provide both bp_systolic and bp_diastolic, or omit both.")
+        return self

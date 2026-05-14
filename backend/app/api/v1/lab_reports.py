@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.exceptions import NotFoundError
 from app.repositories import health_repository, user_repository
-from app.schemas.lab_report import LabReportCreate, LabReportResponse
+from app.schemas.lab_report import BiomarkerValuesUpsert, LabReportCreate, LabReportResponse
 
 router = APIRouter()
 
@@ -30,3 +30,9 @@ def latest_lab_report(user_id: UUID, db: Session = Depends(get_db)):
     if report is None:
         raise NotFoundError("Lab report not found")
     return report
+
+
+@router.put("/users/{user_id}/biomarkers", response_model=LabReportResponse)
+def upsert_biomarker_values(user_id: UUID, payload: BiomarkerValuesUpsert, db: Session = Depends(get_db)):
+    user_repository.ensure_user(db, user_id)
+    return health_repository.upsert_biomarker_values(db, user_id, payload)

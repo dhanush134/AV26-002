@@ -1,11 +1,12 @@
 from uuid import UUID
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.lab_report import LabReport
 from app.models.lifestyle import LifestyleProfile
-from app.schemas.lab_report import LabReportCreate
+from app.schemas.lab_report import BiomarkerValuesUpsert, LabReportCreate
 from app.schemas.lifestyle import LifestyleCreate, LifestyleUpdate
 
 
@@ -52,3 +53,25 @@ def get_latest_lab_report(db: Session, user_id: UUID) -> LabReport | None:
         .order_by(LabReport.report_date.desc(), LabReport.created_at.desc())
         .limit(1)
     )
+
+
+def upsert_biomarker_values(
+    db: Session,
+    user_id: UUID,
+    payload: BiomarkerValuesUpsert,
+    report_date: date | None = None,
+) -> LabReport:
+    target_date = report_date or date.today()
+    report = db.scalar(
+        select(LabReport).where(LabReport.user_id == user_id, LabReport.report_date == target_date).limit(1)
+    )
+    values = payload.model_dump(exclude_unset=True)
+    if report is None:
+        report = LabReport(user_id=user_id, report_date=target_date, **values)
+        db.add(report)
+    else:
+        for key, value in values.items():
+            setattr(report, key, value)
+    db.commit()
+    db.refresh(report)
+    return report

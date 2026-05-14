@@ -66,3 +66,69 @@ def test_doctor_report(client: TestClient) -> None:
     assert payload["user_id"] == user_id
     assert "latest_vitals_summary" in payload
     assert payload["disclaimer"]
+
+
+def test_upsert_biomarker_values(client: TestClient) -> None:
+    user_id = _create_demo(client)
+
+    create_response = client.put(
+        f"/api/v1/users/{user_id}/biomarkers",
+        json={
+            "hba1c": 5.4,
+            "bp_systolic": 118,
+            "bp_diastolic": 76,
+            "vitamin_d": 34,
+            "vitamin_b12": 540,
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+    created = create_response.json()
+    assert created["hba1c"] == 5.4
+    assert created["bp_systolic"] == 118
+    assert created["vitamin_d"] == 34
+
+    update_response = client.put(
+        f"/api/v1/users/{user_id}/biomarkers",
+        json={
+            "hba1c": 5.8,
+            "bp_systolic": 124,
+            "bp_diastolic": 80,
+            "vitamin_d": 41,
+            "vitamin_b12": 620,
+        },
+    )
+    assert update_response.status_code == 200, update_response.text
+    updated = update_response.json()
+    assert updated["id"] == created["id"]
+    assert updated["hba1c"] == 5.8
+    assert updated["bp_systolic"] == 124
+    assert updated["vitamin_b12"] == 620
+
+    invalid_response = client.put(
+        f"/api/v1/users/{user_id}/biomarkers",
+        json={"bp_systolic": 124},
+    )
+    assert invalid_response.status_code == 422
+
+
+def test_update_user_bmi_metrics(client: TestClient) -> None:
+    user_id = _create_demo(client)
+    response = client.patch(
+        f"/api/v1/users/{user_id}",
+        json={"age": 36, "height_cm": 181.5, "weight_kg": 82.2},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["id"] == user_id
+    assert payload["age"] == 36
+    assert payload["height_cm"] == 181.5
+    assert payload["weight_kg"] == 82.2
+
+
+def test_delete_user_clears_single_user_flow(client: TestClient) -> None:
+    user_id = _create_demo(client)
+    delete_response = client.delete(f"/api/v1/users/{user_id}")
+    assert delete_response.status_code == 204, delete_response.text
+
+    get_response = client.get(f"/api/v1/users/{user_id}")
+    assert get_response.status_code == 404

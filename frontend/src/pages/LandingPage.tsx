@@ -5,6 +5,7 @@ import {
   ArrowRight,
   BrainCircuit,
   HeartPulse,
+  RefreshCw,
   Sparkles,
   Watch,
 } from "lucide-react";
@@ -14,6 +15,14 @@ import { Card } from "../components/ui/Card";
 const STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
+function optionalNumber(value: string) {
+  return value.trim() ? Number(value) : null;
+}
+
+function optionalInteger(value: string) {
+  return value.trim() ? Math.round(Number(value)) : null;
+}
 
 type IntakeForm = {
   fullName: string;
@@ -116,6 +125,23 @@ type SamsungUploadResponse = {
     measurements?: SamsungBodyMeasurement[];
   };
   daily_health?: SamsungDailyHealth[];
+};
+
+type ApiUser = {
+  id: string;
+  full_name: string;
+  age: number;
+  height_cm: number;
+  weight_kg: number;
+  target_age?: number | null;
+};
+
+type ApiLabReport = {
+  hba1c?: number | null;
+  bp_systolic?: number | null;
+  bp_diastolic?: number | null;
+  vitamin_d?: number | null;
+  vitamin_b12?: number | null;
 };
 
 const defaultForm: IntakeForm = {
@@ -290,6 +316,11 @@ function bodyCompositionText(measurement: SamsungBodyMeasurement | undefined) {
   return parts.join(" | ");
 }
 
+function numberText(value: number | null | undefined, digits = 0) {
+  if (typeof value !== "number" || Number.isNaN(value)) return "";
+  return digits > 0 ? value.toFixed(digits) : String(value);
+}
+
 export function LandingPage() {
   const navigate = useNavigate();
   const [form, setForm] = useState<IntakeForm>(defaultForm);
@@ -298,6 +329,7 @@ export function LandingPage() {
   const [reportMessage, setReportMessage] = useState("");
   const [reportName, setReportName] = useState("");
   const [bloodDetailsMessage, setBloodDetailsMessage] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
   const [extractedFields, setExtractedFields] = useState<ExtractedField[]>([]);
 
   useEffect(() => {
@@ -316,9 +348,67 @@ export function LandingPage() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName }));
   }, [form, reportName]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateFromBackend = async () => {
+      try {
+        const existingUserId = localStorage.getItem(USER_STORAGE_KEY);
+        let user: ApiUser | undefined;
+        if (existingUserId) {
+          const response = await fetch(`${API_BASE_URL}/api/v1/users/${existingUserId}`);
+          if (response.ok) {
+            user = (await response.json()) as ApiUser;
+          } else {
+            localStorage.removeItem(USER_STORAGE_KEY);
+          }
+        }
+        if (!user) {
+          const response = await fetch(`${API_BASE_URL}/api/v1/users?limit=1`);
+          if (response.ok) {
+            const users = (await response.json()) as ApiUser[];
+            user = users[0];
+            if (user) localStorage.setItem(USER_STORAGE_KEY, user.id);
+          }
+        }
+        if (!user || cancelled) return;
+
+        let latestLab: ApiLabReport | undefined;
+        const labResponse = await fetch(`${API_BASE_URL}/api/v1/users/${user.id}/lab-reports/latest`);
+        if (labResponse.ok) {
+          latestLab = (await labResponse.json()) as ApiLabReport;
+        }
+
+        if (cancelled) return;
+        setForm((current) => ({
+          ...current,
+          fullName: current.fullName || user.full_name,
+          currentAge: numberText(user.age),
+          height: numberText(user.height_cm, 1),
+          weight: numberText(user.weight_kg, 1),
+          targetTwinAge: numberText(user.target_age),
+          hba1c: numberText(latestLab?.hba1c, 1),
+          bpSystolic: numberText(latestLab?.bp_systolic),
+          bpDiastolic: numberText(latestLab?.bp_diastolic),
+          vitaminD: numberText(latestLab?.vitamin_d, 1),
+          vitaminB12: numberText(latestLab?.vitamin_b12),
+        }));
+      } catch {
+        // Keep locally cached values if the backend is not available yet.
+      }
+    };
+
+    hydrateFromBackend();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const filledManualFields = manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length;
   const completion = Math.round((filledManualFields / manualFieldCount.length) * 100);
   const hasRequiredBmiMetrics = [form.currentAge, form.height, form.weight].every((value) => value.trim().length > 0);
+  const hasPartialBp = [form.bpSystolic, form.bpDiastolic].filter((value) => value.trim().length > 0).length === 1;
+  const canSubmitDetails = hasRequiredBmiMetrics && !hasPartialBp;
 
   const updateField = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -332,6 +422,15 @@ export function LandingPage() {
   const getOrCreateIntakeUser = async (current: IntakeForm) => {
     const existingUserId = localStorage.getItem(USER_STORAGE_KEY);
     if (existingUserId) return existingUserId;
+
+    const usersResponse = await fetch(`${API_BASE_URL}/api/v1/users?limit=1`);
+    if (usersResponse.ok) {
+      const users = (await usersResponse.json()) as ApiUser[];
+      if (users[0]) {
+        localStorage.setItem(USER_STORAGE_KEY, users[0].id);
+        return users[0].id;
+      }
+    }
 
     const response = await fetch(`${API_BASE_URL}/api/v1/users`, {
       method: "POST",
@@ -351,6 +450,50 @@ export function LandingPage() {
     const user = (await response.json()) as { id: string };
     localStorage.setItem(USER_STORAGE_KEY, user.id);
     return user.id;
+  };
+
+  const updateUserMetrics = async (userId: string, current: IntakeForm) => {
+    const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        full_name: current.fullName.trim() || "Samsung Health User",
+        age: Number(current.currentAge) || 34,
+        height_cm: Number(current.height) || 170,
+        weight_kg: Number(current.weight) || 70,
+        target_age: Number(current.targetTwinAge) || 75,
+      }),
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || "Could not update BMI metrics.");
+    }
+  };
+
+  const resetSingleUserFlow = async () => {
+    setResetLoading(true);
+    setWearableMessage("");
+    setBloodDetailsMessage("");
+    try {
+      const userId = localStorage.getItem(USER_STORAGE_KEY);
+      if (userId) {
+        const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}`, { method: "DELETE" });
+        if (!response.ok && response.status !== 404) {
+          const errorText = await response.text();
+          throw new Error(errorText || "Could not clear user data.");
+        }
+      }
+      localStorage.removeItem(USER_STORAGE_KEY);
+      localStorage.removeItem(STORAGE_KEY);
+      setForm(defaultForm);
+      setReportName("");
+      setExtractedFields([]);
+      setBloodDetailsMessage("User data cleared. You can start fresh.");
+    } catch (error) {
+      setBloodDetailsMessage(error instanceof Error ? error.message : "Could not clear user data.");
+    } finally {
+      setResetLoading(false);
+    }
   };
 
   const connectWearable = async () => {
@@ -395,13 +538,12 @@ export function LandingPage() {
         dailySteps: formatNumber(latestDay?.steps ?? payload.steps?.summary?.total_steps_detected),
         sleepHours: formatNumber(typeof latestDay?.sleep_minutes === "number" ? latestDay.sleep_minutes / 60 : null, 1),
       };
-      setForm((current) => {
-        const next = { ...current };
-        (Object.entries(nextFields) as Array<[keyof IntakeForm, string]>).forEach(([key, value]) => {
-          if (value) next[key] = value as never;
-        });
-        return next;
+      const mergedForm = { ...form };
+      (Object.entries(nextFields) as Array<[keyof IntakeForm, string]>).forEach(([key, value]) => {
+        if (value) mergedForm[key] = value as never;
       });
+      setForm(mergedForm);
+      await updateUserMetrics(userId, mergedForm);
 
       const savedCounts = payload.storage?.saved_counts || {};
       const savedTotal = Object.values(savedCounts).reduce((sum, count) => sum + count, 0);
@@ -438,16 +580,44 @@ export function LandingPage() {
     }
   };
 
-  const submitBloodDetails = (event: React.FormEvent<HTMLFormElement>) => {
+  const submitBloodDetails = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!hasRequiredBmiMetrics) return;
+    if (!canSubmitDetails) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName }));
-    setBloodDetailsMessage("Blood details submitted and saved.");
+    setBloodDetailsMessage("Saving details...");
+    try {
+      const userId = await getOrCreateIntakeUser(form);
+      await updateUserMetrics(userId, form);
+      const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/biomarkers`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          hba1c: optionalNumber(form.hba1c),
+          bp_systolic: optionalInteger(form.bpSystolic),
+          bp_diastolic: optionalInteger(form.bpDiastolic),
+          vitamin_d: optionalNumber(form.vitaminD),
+          vitamin_b12: optionalNumber(form.vitaminB12),
+        }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Could not save biomarker details.");
+      }
+      setBloodDetailsMessage("Details submitted and saved to the database.");
+    } catch (error) {
+      setBloodDetailsMessage(error instanceof Error ? error.message : "Could not save biomarker details.");
+    }
   };
 
   return (
     <main className="min-h-screen bg-life-grid bg-[size:44px_44px]">
       <section className="page-wrap py-6 sm:py-8">
+        <div className="mb-4 flex justify-end">
+          <Button variant="secondary" onClick={resetSingleUserFlow} disabled={resetLoading} title="Clear user data and start fresh">
+            <RefreshCw size={17} className={resetLoading ? "animate-spin" : ""} />
+            {resetLoading ? "Clearing..." : "Start fresh"}
+          </Button>
+        </div>
         <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(280px,0.75fr)]">
           <Card className="!p-0 h-full overflow-hidden">
             <div className="relative p-5 sm:p-6">
@@ -512,25 +682,29 @@ export function LandingPage() {
           <Card title="Add BMI metrics" className="h-full">
             <form className="mt-4" onSubmit={submitBloodDetails}>
               <div className="grid gap-4 sm:grid-cols-3">
-                <BloodReportField label="Age" value={form.currentAge} onChange={(value) => updateBloodDetail("currentAge", value)} required />
-                <BloodReportField label="Weight" value={form.weight} onChange={(value) => updateBloodDetail("weight", value)} required />
-                <BloodReportField label="Height" value={form.height} onChange={(value) => updateBloodDetail("height", value)} required />
+                <BloodReportField label="Age" unit="years" value={form.currentAge} onChange={(value) => updateBloodDetail("currentAge", value)} required />
+                <BloodReportField label="Weight" unit="kg" value={form.weight} onChange={(value) => updateBloodDetail("weight", value)} required />
+                <BloodReportField label="Height" unit="cm" value={form.height} onChange={(value) => updateBloodDetail("height", value)} required />
               </div>
 
               <p className="mt-6 text-sm leading-6 text-slate-300">
                 Add key blood report values to improve your twin profile.
               </p>
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <BloodReportField label="HbA1c" value={form.hba1c} onChange={(value) => updateBloodDetail("hba1c", value)} />
-                <BloodReportField label="Vitamin D" value={form.vitaminD} onChange={(value) => updateBloodDetail("vitaminD", value)} />
-                <BloodReportField label="Vitamin B12" value={form.vitaminB12} onChange={(value) => updateBloodDetail("vitaminB12", value)} />
-                <div className="grid grid-cols-2 gap-3">
-                  <BloodReportField label="BP" inputLabel="BP systolic" value={form.bpSystolic} onChange={(value) => updateBloodDetail("bpSystolic", value)} />
-                  <BloodReportField label="BP" inputLabel="BP diastolic" value={form.bpDiastolic} onChange={(value) => updateBloodDetail("bpDiastolic", value)} />
-                </div>
+                <BloodReportField label="HbA1c" unit="%" value={form.hba1c} onChange={(value) => updateBloodDetail("hba1c", value)} />
+                <BloodReportField label="Vitamin D" unit="ng/ml" value={form.vitaminD} onChange={(value) => updateBloodDetail("vitaminD", value)} />
+                <BloodReportField label="Vitamin B12" unit="pg/ml" value={form.vitaminB12} onChange={(value) => updateBloodDetail("vitaminB12", value)} />
+                <BloodPressureField
+                  systolic={form.bpSystolic}
+                  diastolic={form.bpDiastolic}
+                  onSystolicChange={(value) => updateBloodDetail("bpSystolic", value)}
+                  onDiastolicChange={(value) => updateBloodDetail("bpDiastolic", value)}
+                  invalid={hasPartialBp}
+                />
               </div>
               <div className="mt-5 flex flex-wrap items-center gap-3">
-                <Button type="submit" disabled={!hasRequiredBmiMetrics}>Submit details</Button>
+                <Button type="submit" disabled={!canSubmitDetails}>Submit details</Button>
+                {hasPartialBp ? <span className="text-sm font-medium text-amber-100">Enter both BP values or leave both empty.</span> : null}
                 {bloodDetailsMessage ? <span className="text-sm font-medium text-emerald-100">{bloodDetailsMessage}</span> : null}
               </div>
             </form>
@@ -614,12 +788,14 @@ function HumanProgress({ value }: { value: number }) {
 function BloodReportField({
   label,
   inputLabel,
+  unit,
   value,
   onChange,
   required = false,
 }: {
   label: string;
   inputLabel?: string;
+  unit: string;
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
@@ -630,14 +806,61 @@ function BloodReportField({
         {label}
         {required ? <span className="ml-1 text-cyan-200">*</span> : null}
       </span>
-      <input
-        className="field"
-        type="number"
-        aria-label={inputLabel || label}
-        required={required}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      <div className="relative">
+        <input
+          className="field pr-16"
+          type="number"
+          aria-label={inputLabel || label}
+          required={required}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <span className="pointer-events-none absolute inset-y-0 right-4 flex items-center text-xs font-semibold text-slate-500">
+          {unit}
+        </span>
+      </div>
+    </label>
+  );
+}
+
+function BloodPressureField({
+  systolic,
+  diastolic,
+  onSystolicChange,
+  onDiastolicChange,
+  invalid,
+}: {
+  systolic: string;
+  diastolic: string;
+  onSystolicChange: (value: string) => void;
+  onDiastolicChange: (value: string) => void;
+  invalid: boolean;
+}) {
+  const inputClasses = "h-full min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 text-center text-sm text-white outline-none";
+
+  return (
+    <label>
+      <span className="mb-2 block text-sm font-medium text-slate-300">BP</span>
+      <div className={`flex min-h-[46px] items-center gap-2 rounded-xl border bg-white/[0.07] px-4 py-0 transition ${invalid ? "border-amber-300/70" : "border-white/10"}`}>
+        <input
+          className={inputClasses}
+          type="number"
+          aria-label="BP systolic"
+          required={diastolic.trim().length > 0}
+          value={systolic}
+          onChange={(event) => onSystolicChange(event.target.value)}
+        />
+        <span className="text-lg font-bold text-slate-500">/</span>
+        <input
+          className={inputClasses}
+          type="number"
+          aria-label="BP diastolic"
+          required={systolic.trim().length > 0}
+          value={diastolic}
+          onChange={(event) => onDiastolicChange(event.target.value)}
+        />
+        <span className="shrink-0 text-xs font-semibold text-slate-500">mmHg</span>
+      </div>
     </label>
   );
 }
