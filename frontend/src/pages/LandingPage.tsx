@@ -6,13 +6,11 @@ import {
   BrainCircuit,
   ChevronDown,
   ChevronUp,
-  CheckCircle2,
   CloudUpload,
   Dna,
   FileSearch,
   HeartPulse,
   Sparkles,
-  Target,
   Watch,
 } from "lucide-react";
 import { Button } from "../components/ui/Button";
@@ -187,7 +185,6 @@ const manualFieldCount = [
   "tsh",
   "cortisol",
   "testosterone",
-  "targetTwinAge",
 ] as const;
 
 const geneticCards: Array<{ key: GeneticTrack; title: string; copy: string }> = [
@@ -329,7 +326,6 @@ export function LandingPage() {
   const [wearableMessage, setWearableMessage] = useState("");
   const [wearableLoading, setWearableLoading] = useState(false);
   const [reportMessage, setReportMessage] = useState("");
-  const [saveMessage, setSaveMessage] = useState("");
   const [reportName, setReportName] = useState("");
   const [manualExpanded, setManualExpanded] = useState(false);
   const [geneticUploads, setGeneticUploads] = useState<Record<GeneticTrack, string>>({
@@ -362,7 +358,6 @@ export function LandingPage() {
 
   const updateField = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
-    setSaveMessage("");
   };
 
   const getOrCreateIntakeUser = async (current: IntakeForm) => {
@@ -392,7 +387,6 @@ export function LandingPage() {
   const connectWearable = async () => {
     setWearableLoading(true);
     setWearableMessage("Reading C:\\Users\\dhanu\\Downloads\\Data.zip through the backend and syncing Samsung Health data...");
-    setSaveMessage("");
     try {
       const userId = await getOrCreateIntakeUser(form);
       const params = new URLSearchParams({
@@ -473,18 +467,12 @@ export function LandingPage() {
       setExtractedFields([]);
       setReportMessage("The file was uploaded, but it could not be decoded in-browser. A backend document parser will make this more robust.");
     }
-    setSaveMessage("");
   };
 
   const handleGeneticUpload = (track: GeneticTrack, file: File | undefined) => {
     if (!file) return;
     setGeneticUploads((current) => ({ ...current, [track]: file.name }));
     updateField(track, true as IntakeForm[typeof track]);
-  };
-
-  const saveDraft = () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName, geneticUploads }));
-    setSaveMessage("Your intake draft has been saved in this browser. The twin will become more accurate as you keep adding more verified data.");
   };
 
   return (
@@ -632,59 +620,56 @@ export function LandingPage() {
           </Card>
         </div>
 
-        <div className="mt-6">
+        <div className="mt-6 grid items-start gap-6 xl:grid-cols-[0.9fr_1.1fr]">
           <Card title="3. Upload Blood Reports and Health Files">
-              <p className="text-sm leading-7 text-slate-300">
-                Upload PDF, PPT, CSV, DOC, or text-based health reports. The intake assistant tries to confirm recognizable
-                data points and fills the matching boxes automatically.
-              </p>
-              <label className="mt-5 flex cursor-pointer flex-col items-center justify-center rounded-3xl border border-dashed border-cyan-300/25 bg-cyan-300/5 px-5 py-8 text-center transition hover:bg-cyan-300/10">
-                <CloudUpload className="h-8 w-8 text-cyan-200" />
-                <span className="mt-3 text-base font-semibold text-white">Upload lab report or blood test file</span>
-                <span className="mt-2 text-sm text-slate-400">PDF, PPT, CSV, TXT, or any other exported report format</span>
-                <input
-                  className="hidden"
-                  type="file"
-                  accept=".pdf,.ppt,.pptx,.doc,.docx,.csv,.txt,.json,.xlsx,.xls,image/*"
-                  onChange={(event) => handleReportUpload(event.target.files?.[0])}
-                />
-              </label>
-              {reportName ? <p className="mt-4 text-sm text-slate-400">Latest file: {reportName}</p> : null}
-              {reportMessage ? <StatusNote tone="info">{reportMessage}</StatusNote> : null}
-              {extractedFields.length ? (
-                <div className="mt-5 space-y-3">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-white">
-                    <FileSearch size={16} className="text-emerald-200" />
-                    Confirmed values
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {extractedFields.map((field) => (
-                      <div key={field.key} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-white">{field.label}</p>
-                            <p className="mt-1 text-sm text-slate-300">{field.value}</p>
-                          </div>
-                          <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-100">
-                            {field.confidence}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </Card>
-        </div>
-
-        <div className="mt-6 grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-          <Card title="4. Genetics Uploads">
-            <p className="mb-5 text-sm leading-7 text-slate-300">
-              Switch on the genetics layers you have. You can add uploads now and refine with notes whenever needed.
+            <p className="text-sm leading-6 text-slate-300">
+              Upload PDF, PPT, CSV, DOC, or text reports. The intake assistant confirms recognizable values and fills matching boxes automatically.
             </p>
-            <div className="grid gap-4 md:grid-cols-2">
+            <label className="mt-4 flex cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-cyan-300/25 bg-cyan-300/5 px-4 py-6 text-center transition hover:bg-cyan-300/10">
+              <CloudUpload className="h-7 w-7 text-cyan-200" />
+              <span className="mt-3 text-sm font-semibold text-white">Upload lab report or blood test file</span>
+              <span className="mt-1 text-xs text-slate-400">PDF, PPT, CSV, TXT, XLSX, or image</span>
+              <input
+                className="hidden"
+                type="file"
+                accept=".pdf,.ppt,.pptx,.doc,.docx,.csv,.txt,.json,.xlsx,.xls,image/*"
+                onChange={(event) => handleReportUpload(event.target.files?.[0])}
+              />
+            </label>
+            {reportName ? <p className="mt-3 text-sm text-slate-400">Latest file: {reportName}</p> : null}
+            {reportMessage ? <StatusNote tone="info">{reportMessage}</StatusNote> : null}
+            {extractedFields.length ? (
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <FileSearch size={16} className="text-emerald-200" />
+                  Confirmed values
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {extractedFields.map((field) => (
+                    <div key={field.key} className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-white">{field.label}</p>
+                          <p className="mt-1 text-sm text-slate-300">{field.value}</p>
+                        </div>
+                        <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-100">
+                          {field.confidence}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </Card>
+
+          <Card title="4. Genetics Uploads">
+            <p className="mb-4 text-sm leading-6 text-slate-300">
+              Switch on the genetics layers you have, add files, and keep notes for nutrition, recovery, training, or stimulant response.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
               {geneticCards.map((card) => (
-                <div key={card.key} className="rounded-3xl border border-white/10 bg-white/[0.04] p-5">
+                <div key={card.key} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
                   <label className="flex items-start gap-3">
                     <input
                       type="checkbox"
@@ -693,11 +678,11 @@ export function LandingPage() {
                       className="mt-1 h-4 w-4 rounded border-white/15 bg-transparent text-cyan-300"
                     />
                     <div>
-                      <p className="font-semibold text-white">{card.title}</p>
-                      <p className="mt-2 text-sm leading-6 text-slate-300">{card.copy}</p>
+                      <p className="text-sm font-semibold text-white">{card.title}</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-300">{card.copy}</p>
                     </div>
                   </label>
-                  <label className="mt-4 flex cursor-pointer items-center justify-between rounded-2xl border border-dashed border-white/10 bg-black/10 px-4 py-3 text-sm text-slate-300 transition hover:border-cyan-300/25 hover:bg-cyan-300/5">
+                  <label className="mt-3 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-dashed border-white/10 bg-black/10 px-3 py-2.5 text-xs text-slate-300 transition hover:border-cyan-300/25 hover:bg-cyan-300/5">
                     <span>{geneticUploads[card.key] || "Upload supporting file"}</span>
                     <Dna size={16} className="text-cyan-200" />
                     <input
@@ -715,56 +700,15 @@ export function LandingPage() {
               value={form.geneticsNotes}
               onChange={(value) => updateField("geneticsNotes", value)}
               placeholder="Anything you already know about caffeine sensitivity, training response, food intolerances, recovery, or nutrient handling."
-              className="mt-5"
+              className="mt-4"
             />
           </Card>
+        </div>
 
-          <Card title="5. Ideal Twin Target">
-            <div className="rounded-3xl border border-emerald-300/20 bg-emerald-300/10 p-5">
-              <div className="flex items-center gap-3">
-                <Target className="h-6 w-6 text-emerald-200" />
-                <p className="font-semibold text-emerald-100">Set the age of your idealistic twin</p>
-              </div>
-              <p className="mt-3 text-sm leading-7 text-slate-300">
-                This tells the twin what future state it should optimize toward. It is the age at which you want your ideal
-                healthy version to exist and stay functional.
-              </p>
-            </div>
-
-            <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto]">
-              <FormField
-                label="Target age for your ideal twin"
-                type="number"
-                value={form.targetTwinAge}
-                onChange={(value) => updateField("targetTwinAge", value)}
-                placeholder="75"
-              />
-              <div className="flex items-end">
-                <Button className="w-full sm:w-auto" onClick={saveDraft}>
-                  Save intake <CheckCircle2 size={18} />
-                </Button>
-              </div>
-            </div>
-
-            {saveMessage ? <StatusNote tone="success">{saveMessage}</StatusNote> : null}
-
-            <div className="mt-6 rounded-3xl border border-white/10 bg-white/[0.04] p-5">
-              <p className="text-sm font-semibold text-white">What happens next</p>
-              <div className="mt-4 space-y-3 text-sm leading-6 text-slate-300">
-                <p>1. Fill as much as you know manually.</p>
-                <p>2. Pull wearable-friendly metrics with one click.</p>
-                <p>3. Upload lab files so the intake assistant can confirm extra markers.</p>
-                <p>4. Add genetics inputs to personalize nutrition, recovery, and stimulant handling.</p>
-                <p>5. Save the intake, then continue to the rest of the twin workflow.</p>
-              </div>
-            </div>
-
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Button onClick={() => navigate("/twin")}>
-                Continue to your twin <ArrowRight size={18} />
-              </Button>
-            </div>
-          </Card>
+        <div className="mt-6 flex justify-end">
+          <Button onClick={() => navigate("/twin")}>
+            Continue to your twin <ArrowRight size={18} />
+          </Button>
         </div>
       </section>
     </main>
