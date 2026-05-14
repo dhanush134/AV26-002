@@ -1,0 +1,25 @@
+# Python
+backend/__pycache__/
+backend/.venv/
+backend/venv/
+backend/.env
+backend/*.pyc
+
+# Alembic / logs
+backend/logs/
+backend/*.log
+
+# Node / Frontend
+frontend/node_modules/
+frontend/.env
+frontend/dist/
+frontend/.next/
+frontend/build/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# General env files
+.env
