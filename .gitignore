@@ -15,6 +15,7 @@ frontend/.env
 frontend/dist/
 frontend/.next/
 frontend/build/
+frontend/*.tsbuildinfo
 
 # OS / IDE
 .DS_Store
