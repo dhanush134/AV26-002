@@ -202,6 +202,20 @@ type WearableReading = {
   source?: string;
 };
 
+type HealthDailySummary = {
+  id?: string;
+  date: string;
+  steps?: number | null;
+  avg_heart_rate?: number | null;
+  max_heart_rate?: number | null;
+  active_time_seconds?: number | null;
+  exercise_time_seconds?: number | null;
+  stress_avg_score?: number | null;
+  stress_max_score?: number | null;
+  sleep_minutes?: number | null;
+  sleep_score?: number | null;
+};
+
 type AlertItem = {
   id: string;
   severity: "info" | "warning" | "critical";
@@ -527,55 +541,81 @@ function wearableChartData(readings: WearableReading[], preferDateLabels = false
     }));
 }
 
+function dailySummariesToWearableReadings(summaries: HealthDailySummary[]) {
+  return summaries
+    .filter((item) => item.date)
+    .map((item) => ({
+      id: item.id || `summary-${item.date}`,
+      timestamp: `${item.date}T17:00:00+05:30`,
+      heart_rate: item.avg_heart_rate != null ? Math.round(item.avg_heart_rate) : item.max_heart_rate != null ? Math.round(item.max_heart_rate) : null,
+      resting_heart_rate: item.avg_heart_rate != null ? Math.round(item.avg_heart_rate) : null,
+      steps: item.steps ?? null,
+      active_minutes:
+        item.active_time_seconds != null
+          ? Math.round(item.active_time_seconds / 60)
+          : item.exercise_time_seconds != null
+            ? Math.round(item.exercise_time_seconds / 60)
+            : null,
+      sleep_hours: item.sleep_minutes != null ? Number((item.sleep_minutes / 60).toFixed(1)) : null,
+      sleep_quality: item.sleep_score ?? null,
+      stress_score: item.stress_avg_score ?? item.stress_max_score ?? null,
+      source: "samsung health",
+    })) satisfies WearableReading[];
+}
+
 function deriveWearableAlerts(readings: WearableReading[]): AlertItem[] {
   const sorted = readings.slice().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   const latest = sorted[0];
   const alerts: AlertItem[] = [];
   if (!latest) return alerts;
-  const latestBpm = latest.heart_rate ?? latest.resting_heart_rate;
+  const highStress = sorted.find((item) => item.stress_score != null && item.stress_score >= 70);
+  const highBpm = sorted.find((item) => (item.heart_rate ?? item.resting_heart_rate ?? 0) >= 100 && (item.active_minutes ?? 0) <= 10);
+  const lowMovement = sorted.find((item) => (item.steps ?? 0) > 0 && (item.steps ?? 0) < 5000);
+  const shortSleep = sorted.find((item) => item.sleep_hours != null && item.sleep_hours < 6.5);
 
-  if (latest.stress_score != null && latest.stress_score >= 80) {
+  if (highStress?.stress_score != null) {
     alerts.push({
       id: "derived-stress",
       severity: "warning",
       title: "Stress is running high",
-      message: `Latest stress score is ${Math.round(latest.stress_score)}.`,
+      message: `Stress score reached ${Math.round(highStress.stress_score)} in the wearable data.`,
       recommended_action: "Take a 1-minute breathing break now.",
-      source: "wearable",
-      timestamp: latest.timestamp,
+      source: highStress.source || "wearable",
+      timestamp: highStress.timestamp,
     });
   }
-  if (latestBpm != null && latestBpm >= 110 && (latest.active_minutes ?? 0) <= 5) {
+  const highBpmValue = highBpm?.heart_rate ?? highBpm?.resting_heart_rate;
+  if (highBpm && highBpmValue != null) {
     alerts.push({
       id: "derived-high-bpm-rest",
       severity: "critical",
       title: "High BPM while inactive",
-      message: `BPM is ${latestBpm} with low activity recorded.`,
+      message: `BPM reached ${highBpmValue} with low activity recorded.`,
       recommended_action: "Sit down, hydrate, recheck the watch fit, and avoid intense activity if this repeats.",
-      source: "wearable",
-      timestamp: latest.timestamp,
+      source: highBpm.source || "wearable",
+      timestamp: highBpm.timestamp,
     });
   }
-  if ((latest.steps ?? 0) < 2500) {
+  if (lowMovement?.steps != null) {
     alerts.push({
       id: "derived-walk",
       severity: "info",
       title: "Movement is low",
-      message: `Steps are at ${latest.steps ?? 0}.`,
+      message: `Steps are at ${lowMovement.steps}.`,
       recommended_action: "Take a 10-minute walk if your body feels okay.",
-      source: "wearable",
-      timestamp: latest.timestamp,
+      source: lowMovement.source || "wearable",
+      timestamp: lowMovement.timestamp,
     });
   }
-  if (latest.sleep_hours != null && latest.sleep_hours < 6) {
+  if (shortSleep?.sleep_hours != null) {
     alerts.push({
       id: "derived-sleep",
       severity: "warning",
       title: "Short sleep detected",
-      message: `Last sleep was ${latest.sleep_hours.toFixed(1)} hours.`,
+      message: `Sleep was ${shortSleep.sleep_hours.toFixed(1)} hours.`,
       recommended_action: "Keep workout intensity easy and protect tonight's sleep window.",
-      source: "wearable",
-      timestamp: latest.timestamp,
+      source: shortSleep.source || "wearable",
+      timestamp: shortSleep.timestamp,
     });
   }
   return alerts;
@@ -2208,29 +2248,6 @@ function TwinTab({ clampedScore, routinePlan }: { clampedScore: number; routineP
           <HumanBmiOutline label="Ideal You" bmi={idealBmi} color={COLORS.accent} ideal />
         </div>
       </div>
-
-      <div style={{ ...cardStyle, borderRadius: 20, padding: 24 }}>
-        <SectionLabel color={COLORS.accent}>Focus Path</SectionLabel>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14 }}>
-          {[
-            { label: "Routine", text: "Complete today's checklist consistently." },
-            { label: "Nutrition", text: "Follow the composition plan without making meals rigid." },
-            { label: "Recovery", text: "Protect sleep, stress control, and daily movement." },
-          ].map((item) => (
-            <div key={item.label} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 16 }}>
-              <div style={{ color: COLORS.textPrimary, fontWeight: 900, fontSize: 14 }}>{item.label}</div>
-              <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.6, marginTop: 6 }}>{item.text}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 18 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <span style={{ color: COLORS.textSecondary, fontSize: 12, fontWeight: 800 }}>Overall progress</span>
-            <span style={{ color: COLORS.accent, fontSize: 12, fontWeight: 900 }}>{clampedScore}%</span>
-          </div>
-          <ProgressBar value={clampedScore} color={COLORS.accent} height={6} />
-        </div>
-      </div>
     </div>
   );
 }
@@ -2339,12 +2356,17 @@ function AlertsTab() {
           setMessage("Submit intake details first to read wearable alerts.");
           return;
         }
-        const [readingsResponse, alertsResponse] = await Promise.all([
+        const [readingsResponse, alertsResponse, summariesResponse] = await Promise.all([
           fetch(`${API_BASE_URL}/api/v1/users/${userId}/wearable-readings?limit=60`),
           fetch(`${API_BASE_URL}/api/v1/users/${userId}/alerts`),
+          fetch(`${API_BASE_URL}/api/health/users/${userId}/daily-summaries`),
         ]);
         if (!readingsResponse.ok) throw new Error(await readingsResponse.text());
         const wearablePayload = (await readingsResponse.json()) as WearableReading[];
+        const summariesPayload = summariesResponse.ok
+          ? (await summariesResponse.json()) as { summaries?: HealthDailySummary[] }
+          : { summaries: [] };
+        const fallbackReadings = dailySummariesToWearableReadings((summariesPayload.summaries || []).slice(-60));
         const alertPayload = alertsResponse.ok ? (await alertsResponse.json()) as Array<{
           id: string;
           severity: AlertItem["severity"];
@@ -2355,7 +2377,7 @@ function AlertsTab() {
           created_at?: string;
         }> : [];
         if (cancelled) return;
-        setReadings(wearablePayload);
+        setReadings(wearablePayload.length ? wearablePayload : fallbackReadings);
         setBackendAlerts(
           alertPayload.map((item) => ({
             id: item.id,
