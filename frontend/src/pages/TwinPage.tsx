@@ -28,6 +28,8 @@ const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
 const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
 const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
+const ADAPTIVE_PLAN_PENDING_STORAGE_KEY = "lifetwin_adaptive_plan_pending_v1";
+const ADAPTIVE_PLAN_UPDATED_EVENT = "lifetwin-adaptive-plan-updated";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type Tab = (typeof TABS)[number];
@@ -155,7 +157,7 @@ type AdaptiveNutrition = {
 
 type AdaptivePlanResponse = {
   plan_date: string;
-  generated_by: "openai" | "fallback";
+  generated_by: "openai";
   model_used: string;
   strictness: "strict" | "progressive" | "recovery";
   summary: string;
@@ -177,7 +179,7 @@ type RoutinePlanResponse = Omit<AdaptivePlanResponse, "nutrition">;
 type NutritionPlanResponse = Pick<AdaptivePlanResponse, "plan_date" | "generated_by" | "model_used" | "summary" | "nutrition" | "safety_notes">;
 
 type BiomarkerAnalysisResponse = {
-  generated_by: "openai" | "fallback";
+  generated_by: "openai";
   model_used: string;
   summary: string;
   key_findings: string[];
@@ -242,6 +244,14 @@ const appCss = `
   from { transform: rotate(0deg) translateX(80px) rotate(0deg); }
   to { transform: rotate(360deg) translateX(80px) rotate(-360deg); }
 }
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes loading-sweep {
+  0%, 100% { transform: translateX(-15%); opacity: 0.55; }
+  50% { transform: translateX(65%); opacity: 1; }
+}
 .lt-shell { min-height: 100vh; background: #060810; color: #F9FAFB; font-family: "DM Sans", Inter, system-ui, sans-serif; }
 .lt-dashboard { padding-bottom: 78px; }
 .lt-topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 20px 32px; border-bottom: 1px solid #1F2937; background: rgba(6, 8, 16, 0.92); backdrop-filter: blur(20px); position: sticky; top: 0; z-index: 50; }
@@ -273,6 +283,16 @@ function numberFromDraft(value: string | undefined) {
   if (!value?.trim()) return undefined;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function apiErrorText(raw: string, fallback: string) {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as { error?: { message?: string } };
+    return parsed.error?.message || raw;
+  } catch {
+    return raw;
+  }
 }
 
 function loadIntakeBiomarkers(): IntakeBiomarkers {
@@ -333,7 +353,13 @@ function loadIntakeForm() {
 function loadCachedRoutinePlan(): RoutinePlanResponse | null {
   try {
     const saved = localStorage.getItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
-    return saved ? (JSON.parse(saved) as RoutinePlanResponse) : null;
+    if (!saved) return null;
+    const parsed = JSON.parse(saved) as { generated_by?: string };
+    if (parsed.generated_by !== "openai") {
+      localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
+      return null;
+    }
+    return parsed as RoutinePlanResponse;
   } catch {
     return null;
   }
@@ -342,7 +368,13 @@ function loadCachedRoutinePlan(): RoutinePlanResponse | null {
 function loadCachedNutritionPlan(): NutritionPlanResponse | null {
   try {
     const saved = localStorage.getItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
-    return saved ? (JSON.parse(saved) as NutritionPlanResponse) : null;
+    if (!saved) return null;
+    const parsed = JSON.parse(saved) as { generated_by?: string };
+    if (parsed.generated_by !== "openai") {
+      localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
+      return null;
+    }
+    return parsed as NutritionPlanResponse;
   } catch {
     return null;
   }
@@ -351,7 +383,13 @@ function loadCachedNutritionPlan(): NutritionPlanResponse | null {
 function loadCachedBiomarkerAnalysis(): BiomarkerAnalysisResponse | null {
   try {
     const saved = localStorage.getItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
-    return saved ? (JSON.parse(saved) as BiomarkerAnalysisResponse) : null;
+    if (!saved) return null;
+    const parsed = JSON.parse(saved) as { generated_by?: string };
+    if (parsed.generated_by !== "openai") {
+      localStorage.removeItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
+      return null;
+    }
+    return parsed as BiomarkerAnalysisResponse;
   } catch {
     return null;
   }
@@ -594,6 +632,7 @@ export function TwinPage() {
   const [nutritionPlan, setNutritionPlan] = useState<NutritionPlanResponse | null>(() => loadCachedNutritionPlan());
   const [routineLoading, setRoutineLoading] = useState(false);
   const [nutritionLoading, setNutritionLoading] = useState(false);
+  const [checkinSubmitting, setCheckinSubmitting] = useState(false);
   const [adaptiveMessage, setAdaptiveMessage] = useState("");
   const [negativeChoices, setNegativeChoices] = useState<NegativeChoice[]>([]);
   const [dailyNotes, setDailyNotes] = useState("");
@@ -684,67 +723,31 @@ export function TwinPage() {
   }, [intakeBiomarkers]);
 
   useEffect(() => {
-    let cancelled = false;
+    const syncCachedAdaptivePlan = () => {
+      const nextRoutine = loadCachedRoutinePlan();
+      const nextNutrition = loadCachedNutritionPlan();
+      const pending = localStorage.getItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY) === "true";
 
-    const loadAdaptivePlan = async () => {
-      const userId = await getSingleUserId();
-      if (!userId || cancelled) {
+      if (nextRoutine) setRoutinePlan(nextRoutine);
+      if (nextNutrition) setNutritionPlan(nextNutrition);
+
+      setRoutineLoading(pending && !nextRoutine);
+      setNutritionLoading(pending && !nextNutrition);
+
+      if (pending && nextRoutine && !nextNutrition) {
+        setAdaptiveMessage("Routine is ready. Nutrition is still generating...");
+      } else if (pending && !nextRoutine) {
+        setAdaptiveMessage("AI is generating your routine and nutrition...");
+      } else if (nextRoutine || nextNutrition) {
+        setAdaptiveMessage("AI plan ready.");
+      } else {
         setAdaptiveMessage("Submit intake details first to generate the adaptive AI plan.");
-        return;
-      }
-      setRoutineLoading(true);
-      setNutritionLoading(true);
-      setAdaptiveMessage("Generating routine and nutrition in parallel...");
-      const body = JSON.stringify({ metrics: buildMetricsPayload(biomarkers) });
-
-      const routineRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
-      })
-        .then(async (routineResponse) => {
-          if (!routineResponse.ok) throw new Error(await routineResponse.text());
-          const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
-          if (!cancelled) {
-            localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
-            setRoutinePlan(nextRoutine);
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setRoutineLoading(false);
-        });
-
-      const nutritionRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body,
-      })
-        .then(async (nutritionResponse) => {
-          if (!nutritionResponse.ok) throw new Error(await nutritionResponse.text());
-          const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
-          if (!cancelled) {
-            localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
-            setNutritionPlan(nextNutrition);
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setNutritionLoading(false);
-        });
-
-      try {
-        await Promise.all([routineRequest, nutritionRequest]);
-        if (!cancelled) setAdaptiveMessage("AI plan ready.");
-      } catch {
-        if (!cancelled) setAdaptiveMessage("Could not generate the adaptive plan yet. Static routine is still available.");
       }
     };
 
-    loadAdaptivePlan();
-    return () => {
-      cancelled = true;
-    };
-    // Initial plan generation should happen once; manual refresh handles later biomarker edits.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    syncCachedAdaptivePlan();
+    window.addEventListener(ADAPTIVE_PLAN_UPDATED_EVENT, syncCachedAdaptivePlan);
+    return () => window.removeEventListener(ADAPTIVE_PLAN_UPDATED_EVENT, syncCachedAdaptivePlan);
   }, []);
 
   const matchScore = Math.round(
@@ -762,6 +765,7 @@ export function TwinPage() {
   };
 
   const toggleRoutine = (index: number) => {
+    if (checkinSubmitting) return;
     setRoutine((current) => current.map((item, itemIndex) => (itemIndex === index ? { ...item, done: !item.done } : item)));
   };
 
@@ -781,7 +785,7 @@ export function TwinPage() {
           body,
     })
       .then(async (routineResponse) => {
-        if (!routineResponse.ok) throw new Error(await routineResponse.text());
+        if (!routineResponse.ok) throw new Error(apiErrorText(await routineResponse.text(), "OpenAI routine generation failed."));
         const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
         localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
         setRoutinePlan(nextRoutine);
@@ -794,7 +798,7 @@ export function TwinPage() {
           body,
     })
       .then(async (nutritionResponse) => {
-        if (!nutritionResponse.ok) throw new Error(await nutritionResponse.text());
+        if (!nutritionResponse.ok) throw new Error(apiErrorText(await nutritionResponse.text(), "OpenAI nutrition generation failed."));
         const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
         localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
         setNutritionPlan(nextNutrition);
@@ -806,12 +810,13 @@ export function TwinPage() {
       setNegativeChoices([]);
       setDailyNotes("");
       setAdaptiveMessage(`Plan refreshed. Timeline: ${nextRoutine.timeline.estimated_weeks} weeks.`);
-    } catch {
-      setAdaptiveMessage("Could not refresh the AI plan. Check that the backend and OpenAI key are configured.");
+    } catch (error) {
+      setAdaptiveMessage(error instanceof Error ? error.message : "OpenAI plan refresh failed.");
     }
   };
 
   const submitDailyCheckin = async () => {
+    if (checkinSubmitting) return;
     const userId = await getSingleUserId();
     if (!userId) {
       setAdaptiveMessage("Submit intake details first to submit a check-in.");
@@ -819,9 +824,10 @@ export function TwinPage() {
     }
     const completed = routine.filter((item) => item.done).map((item, index) => item.id || `routine-${index}`);
     const skipped = routine.filter((item) => !item.done).map((item, index) => item.id || `routine-${index}`);
+    setCheckinSubmitting(true);
     setRoutineLoading(true);
     setNutritionLoading(true);
-    setAdaptiveMessage("Submitting today and calculating tomorrow...");
+    setAdaptiveMessage("AI is reviewing today and recalculating tomorrow's routine and nutrition...");
     try {
       const feedback = {
         completed_activity_ids: completed,
@@ -839,7 +845,7 @@ export function TwinPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(checkinPayload),
       });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new Error(apiErrorText(await response.text(), "Could not save today's check-in."));
       const nextPlanDate = nextDateString(routinePlan?.plan_date || nutritionPlan?.plan_date);
       const nextPlanPayload = JSON.stringify({
         plan_date: nextPlanDate,
@@ -852,10 +858,11 @@ export function TwinPage() {
           body: nextPlanPayload,
       })
         .then(async (routineResponse) => {
-          if (!routineResponse.ok) throw new Error(await routineResponse.text());
+          if (!routineResponse.ok) throw new Error(apiErrorText(await routineResponse.text(), "OpenAI routine generation failed."));
           const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
           localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
           setRoutinePlan(nextRoutine);
+          setAdaptiveMessage("Routine updated. Nutrition is still recalculating...");
           return nextRoutine;
         })
         .finally(() => setRoutineLoading(false));
@@ -865,19 +872,30 @@ export function TwinPage() {
           body: nextPlanPayload,
       })
         .then(async (nutritionResponse) => {
-          if (!nutritionResponse.ok) throw new Error(await nutritionResponse.text());
+          if (!nutritionResponse.ok) throw new Error(apiErrorText(await nutritionResponse.text(), "OpenAI nutrition generation failed."));
           const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
           localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
           setNutritionPlan(nextNutrition);
+          setAdaptiveMessage("Routine and nutrition are updated for tomorrow.");
         })
         .finally(() => setNutritionLoading(false));
-      const nextRoutine = await routineRequest;
-      await nutritionRequest;
+      const [routineResult, nutritionResult] = await Promise.allSettled([routineRequest, nutritionRequest]);
+      if (routineResult.status === "rejected") {
+        throw routineResult.reason instanceof Error ? routineResult.reason : new Error("OpenAI routine generation failed.");
+      }
+      if (nutritionResult.status === "rejected") {
+        throw nutritionResult.reason instanceof Error ? nutritionResult.reason : new Error("OpenAI nutrition generation failed.");
+      }
+      const nextRoutine = routineResult.value;
       setNegativeChoices([]);
       setDailyNotes("");
       setAdaptiveMessage(`Tomorrow's plan is ready. Timeline: ${nextRoutine.timeline.estimated_weeks} weeks.`);
-    } catch {
-      setAdaptiveMessage("Could not submit today's check-in. Check backend logs and try again.");
+    } catch (error) {
+      setAdaptiveMessage(error instanceof Error ? error.message : "OpenAI check-in plan generation failed.");
+    } finally {
+      setCheckinSubmitting(false);
+      setRoutineLoading(false);
+      setNutritionLoading(false);
     }
   };
 
@@ -895,6 +913,7 @@ export function TwinPage() {
           doneCount={doneCount}
           routinePlan={routinePlan}
           adaptiveLoading={routineLoading || nutritionLoading}
+          checkinSubmitting={checkinSubmitting}
           adaptiveMessage={adaptiveMessage}
           negativeChoices={negativeChoices}
           dailyNotes={dailyNotes}
@@ -1267,12 +1286,13 @@ function Chip({
   );
 }
 
-function DailyRoutineCard({ time, activity, duration, impact, done, strictRule, onToggle }: RoutineItem & { onToggle: () => void }) {
+function DailyRoutineCard({ time, activity, duration, impact, done, strictRule, disabled = false, onToggle }: RoutineItem & { disabled?: boolean; onToggle: () => void }) {
   const impactColor = impact === "High" ? COLORS.accent : impact === "Med" ? COLORS.gold : COLORS.textMuted;
 
   return (
     <button
       onClick={onToggle}
+      disabled={disabled}
       style={{
         width: "100%",
         display: "flex",
@@ -1282,8 +1302,9 @@ function DailyRoutineCard({ time, activity, duration, impact, done, strictRule, 
         border: `1px solid ${done ? COLORS.accentMid : COLORS.border}`,
         borderRadius: 16,
         padding: "14px 18px",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
         textAlign: "left",
+        opacity: disabled ? 0.68 : 1,
       }}
     >
       <div
@@ -1418,10 +1439,11 @@ function PrimaryButton({ children, onClick, disabled = false }: { children: Reac
   );
 }
 
-function GhostButton({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+function GhostButton({ children, onClick, disabled = false }: { children: ReactNode; onClick?: () => void; disabled?: boolean }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
       style={{
         background: COLORS.card,
         border: `1px solid ${COLORS.border}`,
@@ -1430,10 +1452,11 @@ function GhostButton({ children, onClick }: { children: ReactNode; onClick?: () 
         padding: "12px 22px",
         fontSize: 14,
         fontWeight: 700,
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
         display: "inline-flex",
         alignItems: "center",
         gap: 8,
+        opacity: disabled ? 0.65 : 1,
       }}
     >
       {children}
@@ -1497,6 +1520,7 @@ function RoutineTab({
   doneCount,
   routinePlan,
   adaptiveLoading,
+  checkinSubmitting,
   adaptiveMessage,
   negativeChoices,
   dailyNotes,
@@ -1513,6 +1537,7 @@ function RoutineTab({
   doneCount: number;
   routinePlan: RoutinePlanResponse | null;
   adaptiveLoading: boolean;
+  checkinSubmitting: boolean;
   adaptiveMessage: string;
   negativeChoices: NegativeChoice[];
   dailyNotes: string;
@@ -1522,6 +1547,7 @@ function RoutineTab({
   onRefreshPlan: () => void;
   onSubmitCheckin: () => void;
 }) {
+  const controlsLocked = adaptiveLoading || checkinSubmitting;
   const negativeOptions = routinePlan?.negative_options || (Object.keys(NEGATIVE_LABELS) as NegativeChoice[]);
   const taskCompletionScore = routine.length ? Math.round((doneCount / routine.length) * 100) : 0;
   const sleepPercent = higherIsBetterPercent(biomarkers.sleepHrs, 8);
@@ -1529,6 +1555,7 @@ function RoutineTab({
   const heartRatePercent = lowerIsBetterPercent(biomarkers.heartRate, 70, 110);
   const stressPercent = lowerIsBetterPercent(biomarkers.stress, 35, 100);
   const toggleNegativeChoice = (choice: NegativeChoice) => {
+    if (controlsLocked) return;
     setNegativeChoices(
       negativeChoices.includes(choice)
         ? negativeChoices.filter((item) => item !== choice)
@@ -1543,7 +1570,7 @@ function RoutineTab({
           <div style={{ marginBottom: 24 }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
               <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: 0 }}>Today's Protocol</h2>
-              <GhostButton onClick={onRefreshPlan}>
+              <GhostButton onClick={onRefreshPlan} disabled={controlsLocked}>
                 <RefreshCw size={15} /> {adaptiveLoading ? "Generating..." : "Refresh AI plan"}
               </GhostButton>
             </div>
@@ -1562,10 +1589,26 @@ function RoutineTab({
               </div>
             ) : null}
             {adaptiveMessage ? <p style={{ color: COLORS.textMuted, marginTop: 10, fontSize: 12 }}>{adaptiveMessage}</p> : null}
+            {checkinSubmitting ? (
+              <div style={{ ...cardStyle, marginTop: 14, padding: 16, borderColor: COLORS.accentMid, background: COLORS.accentDim }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <RefreshCw size={18} style={{ color: COLORS.accent, animation: "spin 1s linear infinite" }} />
+                  <div>
+                    <div style={{ color: COLORS.textPrimary, fontWeight: 900, fontSize: 14 }}>AI is recalculating tomorrow's plan</div>
+                    <div style={{ color: COLORS.textSecondary, fontSize: 12, marginTop: 4 }}>
+                      Routine updates first. Nutrition refreshes in parallel and will replace automatically.
+                    </div>
+                  </div>
+                </div>
+                <div style={{ marginTop: 14, height: 6, overflow: "hidden", borderRadius: 999, background: "rgba(255,255,255,0.08)" }}>
+                  <div style={{ height: "100%", width: "66%", borderRadius: 999, background: `linear-gradient(90deg, ${COLORS.accent}, ${COLORS.blue})`, animation: "loading-sweep 1.45s ease-in-out infinite" }} />
+                </div>
+              </div>
+            ) : null}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {routine.map((item, index) => (
-              <DailyRoutineCard key={`${item.time}-${item.activity}`} {...item} onToggle={() => toggleRoutine(index)} />
+              <DailyRoutineCard key={`${item.time}-${item.activity}`} {...item} disabled={controlsLocked} onToggle={() => toggleRoutine(index)} />
             ))}
           </div>
           <div style={{ ...cardStyle, borderRadius: 18, padding: 20, marginTop: 18 }}>
@@ -1576,6 +1619,7 @@ function RoutineTab({
                 return (
                   <button
                     key={choice}
+                    disabled={controlsLocked}
                     onClick={() => toggleNegativeChoice(choice)}
                     style={{
                       border: `1px solid ${active ? COLORS.red : COLORS.border}`,
@@ -1585,7 +1629,8 @@ function RoutineTab({
                       padding: "8px 12px",
                       fontSize: 12,
                       fontWeight: 800,
-                      cursor: "pointer",
+                      cursor: controlsLocked ? "not-allowed" : "pointer",
+                      opacity: controlsLocked ? 0.62 : 1,
                     }}
                   >
                     {NEGATIVE_LABELS[choice]}
@@ -1596,6 +1641,7 @@ function RoutineTab({
             <textarea
               value={dailyNotes}
               onChange={(event) => setDailyNotes(event.target.value)}
+              disabled={controlsLocked}
               placeholder="Add context: what made you skip, cravings, pain, travel, stress, meal notes..."
               style={{
                 width: "100%",
@@ -1610,14 +1656,22 @@ function RoutineTab({
                 font: "inherit",
                 fontSize: 13,
                 boxSizing: "border-box",
+                cursor: controlsLocked ? "not-allowed" : "text",
+                opacity: controlsLocked ? 0.65 : 1,
               }}
             />
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginTop: 14 }}>
               <p style={{ color: COLORS.textMuted, margin: 0, fontSize: 12, maxWidth: 520 }}>
                 {routinePlan?.checkin_prompt || "Submit your completed checklist and misses so tomorrow can be recalculated."}
               </p>
-              <PrimaryButton onClick={onSubmitCheckin} disabled={adaptiveLoading}>
-                {adaptiveLoading ? "Calculating..." : "Submit day"}
+              <PrimaryButton onClick={onSubmitCheckin} disabled={controlsLocked}>
+                {checkinSubmitting ? (
+                  <>
+                    <RefreshCw size={15} style={{ animation: "spin 1s linear infinite" }} /> Calculating...
+                  </>
+                ) : (
+                  "Submit day"
+                )}
               </PrimaryButton>
             </div>
           </div>
@@ -1665,43 +1719,23 @@ function BiomarkersTab({
   }, [intakeBiomarkers]);
 
   useEffect(() => {
-    if (!hasAnyDetails) return;
-    let cancelled = false;
-
-    const loadAnalysis = async () => {
-      setAnalysisLoading(true);
-      setAnalysisMessage("");
-      try {
-        const userId = await getSingleUserId();
-        if (!userId) {
-          setAnalysisMessage("Submit intake details first to generate biomarker analysis.");
-          return;
-        }
-        const response = await fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/biomarker-analysis`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ metrics: buildMetricsPayload(biomarkers) }),
-        });
-        if (!response.ok) throw new Error(await response.text());
-        const payload = (await response.json()) as BiomarkerAnalysisResponse;
-        if (!cancelled) {
-          localStorage.setItem(BIOMARKER_ANALYSIS_STORAGE_KEY, JSON.stringify(payload));
-          setAnalysis(payload);
-        }
-      } catch {
-        if (!cancelled) setAnalysisMessage("Could not generate biomarker analysis right now.");
-      } finally {
-        if (!cancelled) setAnalysisLoading(false);
+    const syncCachedAnalysis = () => {
+      const cached = loadCachedBiomarkerAnalysis();
+      const pending = localStorage.getItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY) === "true";
+      if (cached) {
+        setAnalysis(cached);
+        setAnalysisLoading(false);
+        setAnalysisMessage("");
+        return;
       }
+      setAnalysisLoading(pending);
+      setAnalysisMessage(pending ? "" : "Submit details from the home page to generate biomarker analysis.");
     };
 
-    loadAnalysis();
-    return () => {
-      cancelled = true;
-    };
-    // Analysis refreshes after saved biomarker source changes; manual edits can be saved first.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasAnyDetails, savedBiomarkers]);
+    syncCachedAnalysis();
+    window.addEventListener(ADAPTIVE_PLAN_UPDATED_EVENT, syncCachedAnalysis);
+    return () => window.removeEventListener(ADAPTIVE_PLAN_UPDATED_EVENT, syncCachedAnalysis);
+  }, []);
 
   const hasBiomarkerChanges =
     (typeof savedBiomarkers.hba1c === "number" && biomarkers.hba1c !== savedBiomarkers.hba1c) ||

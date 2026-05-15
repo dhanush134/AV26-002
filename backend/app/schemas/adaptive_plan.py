@@ -137,7 +137,7 @@ class NutritionPlan(StrictModel):
 class AdaptivePlanResponse(StrictModel):
     user_id: UUID
     plan_date: date
-    generated_by: Literal["openai", "fallback"]
+    generated_by: Literal["openai"]
     model_used: str
     strictness: Literal["strict", "progressive", "recovery"]
     summary: str
@@ -153,7 +153,7 @@ class AdaptivePlanResponse(StrictModel):
 class RoutinePlanResponse(StrictModel):
     user_id: UUID
     plan_date: date
-    generated_by: Literal["openai", "fallback"]
+    generated_by: Literal["openai"]
     model_used: str
     strictness: Literal["strict", "progressive", "recovery"]
     summary: str
@@ -167,7 +167,7 @@ class RoutinePlanResponse(StrictModel):
 class NutritionPlanResponse(StrictModel):
     user_id: UUID
     plan_date: date
-    generated_by: Literal["openai", "fallback"]
+    generated_by: Literal["openai"]
     model_used: str
     summary: str
     nutrition: NutritionPlan
@@ -185,7 +185,7 @@ class BiomarkerAnalysisRequest(StrictModel):
 
 class BiomarkerAnalysisResponse(StrictModel):
     user_id: UUID
-    generated_by: Literal["openai", "fallback"]
+    generated_by: Literal["openai"]
     model_used: str
     summary: str
     key_findings: list[str] = Field(min_length=1, max_length=5)

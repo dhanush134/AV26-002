@@ -1,5 +1,8 @@
 import json
-from datetime import date, timedelta
+import random
+import time
+from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 from uuid import UUID
 
@@ -8,6 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.exceptions import ExternalServiceError
 from app.models.daily_checkin import DailyCheckin
 from app.repositories import health_repository, user_repository, wearable_repository
 from app.schemas.adaptive_plan import (
@@ -38,6 +42,127 @@ NEGATIVE_OPTIONS = [
     "low_water",
     "excess_caffeine",
 ]
+
+
+def _openai_failure(operation: str, exc: Exception) -> ExternalServiceError:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        detail = exc.response.text[:1200]
+        try:
+            payload = exc.response.json()
+            detail = payload.get("error", {}).get("message") or detail
+        except ValueError:
+            pass
+        return ExternalServiceError(f"OpenAI {operation} call failed with HTTP {status_code}: {detail}")
+    if isinstance(exc, httpx.TimeoutException):
+        return ExternalServiceError(f"OpenAI {operation} call timed out. Try again or increase the service timeout.")
+    if isinstance(exc, httpx.HTTPError):
+        return ExternalServiceError(f"OpenAI {operation} call failed: {exc}")
+    return ExternalServiceError(f"OpenAI {operation} response could not be used: {exc}")
+
+
+def _retry_after_seconds(response: httpx.Response, fallback_seconds: float, max_seconds: float) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return min(float(retry_after), max_seconds)
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(retry_after)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=UTC)
+                return min(max(0.0, (retry_at - datetime.now(UTC)).total_seconds()), max_seconds)
+            except (TypeError, ValueError):
+                pass
+    return min(fallback_seconds, max_seconds)
+
+
+def _retry_delay(attempt: int) -> float:
+    settings = get_settings()
+    exponential = settings.openai_retry_base_seconds * (2**attempt)
+    jitter = random.uniform(0, settings.openai_retry_base_seconds)
+    return min(exponential + jitter, settings.openai_retry_max_seconds)
+
+
+def _is_retryable_request_error(exc: httpx.RequestError) -> bool:
+    return isinstance(
+        exc,
+        (
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.WriteError,
+            httpx.RemoteProtocolError,
+            httpx.NetworkError,
+        ),
+    )
+
+
+def _post_openai_response(body: dict[str, Any]) -> dict[str, Any]:
+    settings = get_settings()
+    retry_statuses = {408, 409, 425, 429, 500, 502, 503, 504}
+    last_error: Exception | None = None
+
+    with httpx.Client(timeout=settings.openai_timeout_seconds) as client:
+        for attempt in range(settings.openai_max_retries):
+            try:
+                response = client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={
+                        "Authorization": f"Bearer {settings.openai_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if response.status_code not in retry_statuses or attempt == settings.openai_max_retries - 1:
+                    raise
+                time.sleep(_retry_after_seconds(response, _retry_delay(attempt), settings.openai_retry_max_seconds))
+            except httpx.RequestError as exc:
+                last_error = exc
+                if not _is_retryable_request_error(exc) or attempt == settings.openai_max_retries - 1:
+                    raise
+                time.sleep(_retry_delay(attempt))
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("OpenAI request did not complete.")
+
+
+StructuredOpenAIModel = (
+    type[AdaptivePlanResponse] | type[RoutinePlanResponse] | type[NutritionPlanResponse] | type[BiomarkerAnalysisResponse]
+)
+
+
+def _validated_openai_model(
+    *,
+    body: dict[str, Any],
+    response_model: StructuredOpenAIModel,
+    user_id: UUID,
+    plan_date: date | None = None,
+) -> AdaptivePlanResponse | RoutinePlanResponse | NutritionPlanResponse | BiomarkerAnalysisResponse:
+    settings = get_settings()
+    last_error: Exception | None = None
+    for attempt in range(settings.openai_validation_retries):
+        try:
+            raw_plan = json.loads(_output_text(_post_openai_response(body)))
+            raw_plan["user_id"] = str(user_id)
+            raw_plan["generated_by"] = "openai"
+            raw_plan["model_used"] = settings.openai_model
+            if plan_date is not None and "plan_date" in response_model.model_fields:
+                raw_plan["plan_date"] = plan_date.isoformat()
+            return response_model.model_validate(raw_plan)
+        except (ValueError, ValidationError, json.JSONDecodeError) as exc:
+            last_error = exc
+            if attempt == settings.openai_validation_retries - 1:
+                raise
+            time.sleep(_retry_delay(attempt))
+    if last_error:
+        raise last_error
+    raise RuntimeError("OpenAI structured response did not validate.")
 
 
 def _clean_dict(payload: dict[str, Any]) -> dict[str, Any]:
@@ -502,22 +627,8 @@ def _openai_plan(user_id: UUID, plan_date: date, metrics: AdaptiveMetricsInput, 
         },
         "max_output_tokens": 7000,
     }
-    with httpx.Client(timeout=180) as client:
-        response = client.post(
-            "https://api.openai.com/v1/responses",
-            headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        response.raise_for_status()
-    raw_plan = json.loads(_output_text(response.json()))
-    raw_plan["user_id"] = str(user_id)
-    raw_plan["plan_date"] = plan_date.isoformat()
-    raw_plan["generated_by"] = "openai"
-    raw_plan["model_used"] = settings.openai_model
-    return AdaptivePlanResponse.model_validate(raw_plan)
+    response = _validated_openai_model(body=body, response_model=AdaptivePlanResponse, user_id=user_id, plan_date=plan_date)
+    return response if isinstance(response, AdaptivePlanResponse) else AdaptivePlanResponse.model_validate(response)
 
 
 def _openai_structured_response(
@@ -526,12 +637,12 @@ def _openai_structured_response(
     plan_date: date,
     metrics: AdaptiveMetricsInput,
     feedback: PlanFeedbackInput | None,
-    response_model: type[RoutinePlanResponse] | type[NutritionPlanResponse],
+    response_model: type[RoutinePlanResponse] | type[NutritionPlanResponse] | type[BiomarkerAnalysisResponse],
     schema_name: str,
     instructions: str,
     requirements: list[str],
     max_output_tokens: int,
-) -> RoutinePlanResponse | NutritionPlanResponse:
+) -> RoutinePlanResponse | NutritionPlanResponse | BiomarkerAnalysisResponse:
     settings = get_settings()
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured.")
@@ -563,22 +674,8 @@ def _openai_structured_response(
         },
         "max_output_tokens": max_output_tokens,
     }
-    with httpx.Client(timeout=180) as client:
-        response = client.post(
-            "https://api.openai.com/v1/responses",
-            headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        response.raise_for_status()
-    raw_plan = json.loads(_output_text(response.json()))
-    raw_plan["user_id"] = str(user_id)
-    raw_plan["plan_date"] = plan_date.isoformat()
-    raw_plan["generated_by"] = "openai"
-    raw_plan["model_used"] = settings.openai_model
-    return response_model.model_validate(raw_plan)
+    response = _validated_openai_model(body=body, response_model=response_model, user_id=user_id, plan_date=plan_date)
+    return response_model.model_validate(response)
 
 
 def _fallback_biomarker_analysis(user_id: UUID, metrics: AdaptiveMetricsInput) -> BiomarkerAnalysisResponse:
@@ -632,8 +729,8 @@ def generate_adaptive_plan(db: Session, user_id: UUID, payload: AdaptivePlanRequ
     feedback = payload.previous_day
     try:
         return _openai_plan(user_id, plan_date, metrics, feedback)
-    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError):
-        return _fallback_adaptive_plan(user_id, plan_date, metrics, feedback)
+    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        raise _openai_failure("adaptive plan", exc) from exc
 
 
 def _routine_from_plan(plan: AdaptivePlanResponse) -> RoutinePlanResponse:
@@ -711,8 +808,8 @@ def generate_routine_plan(db: Session, user_id: UUID, payload: AdaptivePlanReque
         )
         routine = response if isinstance(response, RoutinePlanResponse) else RoutinePlanResponse.model_validate(response)
         return _bounded_routine_timeline(routine, metrics, feedback)
-    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError):
-        return _routine_from_plan(_fallback_adaptive_plan(user_id, plan_date, metrics, feedback))
+    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        raise _openai_failure("routine plan", exc) from exc
 
 
 def generate_nutrition_plan(db: Session, user_id: UUID, payload: AdaptivePlanRequest) -> NutritionPlanResponse:
@@ -737,8 +834,8 @@ def generate_nutrition_plan(db: Session, user_id: UUID, payload: AdaptivePlanReq
             max_output_tokens=4500,
         )
         return response if isinstance(response, NutritionPlanResponse) else NutritionPlanResponse.model_validate(response)
-    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError):
-        return _nutrition_from_plan(_fallback_adaptive_plan(user_id, plan_date, metrics, feedback))
+    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        raise _openai_failure("nutrition plan", exc) from exc
 
 
 def analyze_biomarkers(db: Session, user_id: UUID, payload: BiomarkerAnalysisRequest) -> BiomarkerAnalysisResponse:
@@ -762,8 +859,8 @@ def analyze_biomarkers(db: Session, user_id: UUID, payload: BiomarkerAnalysisReq
             max_output_tokens=2500,
         )
         return response if isinstance(response, BiomarkerAnalysisResponse) else BiomarkerAnalysisResponse.model_validate(response)
-    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError):
-        return _fallback_biomarker_analysis(user_id, metrics)
+    except (httpx.HTTPError, RuntimeError, ValueError, ValidationError, json.JSONDecodeError) as exc:
+        raise _openai_failure("biomarker analysis", exc) from exc
 
 
 def save_adaptive_checkin_feedback(db: Session, user_id: UUID, payload: AdaptiveCheckinRequest) -> None:

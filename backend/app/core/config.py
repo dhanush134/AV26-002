@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     internal_sync_secret: str | None = Field(default=None, alias="INTERNAL_SYNC_SECRET")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5.5", alias="OPENAI_MODEL")
+    openai_timeout_seconds: float = Field(default=180, ge=10, le=600, alias="OPENAI_TIMEOUT_SECONDS")
+    openai_max_retries: int = Field(default=6, ge=1, le=10, alias="OPENAI_MAX_RETRIES")
+    openai_retry_base_seconds: float = Field(default=1.5, ge=0.1, le=30, alias="OPENAI_RETRY_BASE_SECONDS")
+    openai_retry_max_seconds: float = Field(default=20, ge=1, le=120, alias="OPENAI_RETRY_MAX_SECONDS")
+    openai_validation_retries: int = Field(default=2, ge=1, le=4, alias="OPENAI_VALIDATION_RETRIES")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

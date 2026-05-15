@@ -14,6 +14,11 @@ class BadRequestError(Exception):
         self.message = message
 
 
+class ExternalServiceError(Exception):
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+
 def error_response(status_code: int, message: str, code: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -29,6 +34,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(BadRequestError)
     async def bad_request_handler(_: Request, exc: BadRequestError) -> JSONResponse:
         return error_response(status.HTTP_400_BAD_REQUEST, exc.message, "bad_request")
+
+    @app.exception_handler(ExternalServiceError)
+    async def external_service_handler(_: Request, exc: ExternalServiceError) -> JSONResponse:
+        return error_response(status.HTTP_502_BAD_GATEWAY, exc.message, "external_service_error")
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:

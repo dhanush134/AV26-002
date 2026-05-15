@@ -17,6 +17,8 @@ const WEARABLE_FETCHED_STORAGE_KEY = "lifetwin_wearable_fetched_v1";
 const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
 const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
+const ADAPTIVE_PLAN_PENDING_STORAGE_KEY = "lifetwin_adaptive_plan_pending_v1";
+const ADAPTIVE_PLAN_UPDATED_EVENT = "lifetwin-adaptive-plan-updated";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 function optionalNumber(value: string) {
@@ -322,6 +324,16 @@ function bodyCompositionText(measurement: SamsungBodyMeasurement | undefined) {
   return parts.join(" | ");
 }
 
+function apiErrorText(raw: string, fallback: string) {
+  if (!raw) return fallback;
+  try {
+    const parsed = JSON.parse(raw) as { error?: { message?: string } };
+    return parsed.error?.message || raw;
+  } catch {
+    return raw;
+  }
+}
+
 function numberText(value: number | null | undefined, digits = 0) {
   if (typeof value !== "number" || Number.isNaN(value)) return "";
   return digits > 0 ? value.toFixed(digits) : String(value);
@@ -498,6 +510,8 @@ export function LandingPage() {
       localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
       localStorage.removeItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
+      localStorage.removeItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY);
+      window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
       setForm(defaultForm);
       setWearableFetched(false);
       setReportName("");
@@ -618,18 +632,24 @@ export function LandingPage() {
       });
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(errorText || "Could not save biomarker details.");
+        throw new Error(apiErrorText(errorText, "Could not save biomarker details."));
       }
       setBloodDetailsMessage("AI is generating your routine, nutrition, and biomarker analysis...");
+      localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
+      localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
+      localStorage.removeItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
+      localStorage.setItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY, "true");
+      window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
       const body = JSON.stringify({ metrics: adaptiveMetricsFromForm(form) });
       const routineRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body,
       }).then(async (routineResponse) => {
-        if (!routineResponse.ok) throw new Error(await routineResponse.text());
+        if (!routineResponse.ok) throw new Error(apiErrorText(await routineResponse.text(), "OpenAI routine generation failed."));
         const routinePlan = await routineResponse.json();
         localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(routinePlan));
+        window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
         return routinePlan;
       });
       const nutritionRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
@@ -639,7 +659,10 @@ export function LandingPage() {
       }).then(async (nutritionResponse) => {
         if (nutritionResponse.ok) {
           localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(await nutritionResponse.json()));
+          window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
+          return;
         }
+        throw new Error(apiErrorText(await nutritionResponse.text(), "OpenAI nutrition generation failed."));
       });
       const biomarkerRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/biomarker-analysis`, {
           method: "POST",
@@ -648,12 +671,19 @@ export function LandingPage() {
       }).then(async (analysisResponse) => {
         if (analysisResponse.ok) {
           localStorage.setItem(BIOMARKER_ANALYSIS_STORAGE_KEY, JSON.stringify(await analysisResponse.json()));
+          window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
+          return;
         }
+        throw new Error(apiErrorText(await analysisResponse.text(), "OpenAI biomarker analysis failed."));
       });
       await routineRequest;
       navigate("/twin");
       await Promise.allSettled([nutritionRequest, biomarkerRequest]);
+      localStorage.removeItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY);
+      window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
     } catch (error) {
+      localStorage.removeItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY);
+      window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
       setBloodDetailsMessage(error instanceof Error ? error.message : "Could not save biomarker details.");
       setAiPreloading(false);
     }
