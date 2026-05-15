@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ActivitySquare,
-  ArrowRight,
   BrainCircuit,
   HeartPulse,
   RefreshCw,
@@ -16,6 +15,7 @@ const STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
 const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
 const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
+const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 function optionalNumber(value: string) {
@@ -351,6 +351,7 @@ export function LandingPage() {
   const [reportMessage, setReportMessage] = useState("");
   const [reportName, setReportName] = useState("");
   const [bloodDetailsMessage, setBloodDetailsMessage] = useState("");
+  const [aiPreloading, setAiPreloading] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
   const [extractedFields, setExtractedFields] = useState<ExtractedField[]>([]);
 
@@ -509,6 +510,7 @@ export function LandingPage() {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
+      localStorage.removeItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
       setForm(defaultForm);
       setReportName("");
       setExtractedFields([]);
@@ -609,6 +611,7 @@ export function LandingPage() {
     if (!canSubmitDetails) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ form, reportName }));
     setBloodDetailsMessage("Saving details...");
+    setAiPreloading(true);
     try {
       const userId = await getOrCreateIntakeUser(form);
       await updateUserMetrics(userId, form);
@@ -627,29 +630,42 @@ export function LandingPage() {
         const errorText = await response.text();
         throw new Error(errorText || "Could not save biomarker details.");
       }
-      setBloodDetailsMessage("Details saved. Preloading AI routine and nutrition...");
+      setBloodDetailsMessage("AI is generating your routine, nutrition, and biomarker analysis...");
       const body = JSON.stringify({ metrics: adaptiveMetricsFromForm(form) });
-      const [routineResponse, nutritionResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
+      const routineRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/routine`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body,
-        }),
-        fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
+      }).then(async (routineResponse) => {
+        if (!routineResponse.ok) throw new Error(await routineResponse.text());
+        const routinePlan = await routineResponse.json();
+        localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(routinePlan));
+        return routinePlan;
+      });
+      const nutritionRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/nutrition`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body,
-        }),
-      ]);
-      if (routineResponse.ok) {
-        localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(await routineResponse.json()));
-      }
-      if (nutritionResponse.ok) {
-        localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(await nutritionResponse.json()));
-      }
-      setBloodDetailsMessage("Details submitted. AI routine and nutrition are preloaded.");
+      }).then(async (nutritionResponse) => {
+        if (nutritionResponse.ok) {
+          localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(await nutritionResponse.json()));
+        }
+      });
+      const biomarkerRequest = fetch(`${API_BASE_URL}/api/v1/users/${userId}/adaptive-plan/biomarker-analysis`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+      }).then(async (analysisResponse) => {
+        if (analysisResponse.ok) {
+          localStorage.setItem(BIOMARKER_ANALYSIS_STORAGE_KEY, JSON.stringify(await analysisResponse.json()));
+        }
+      });
+      await routineRequest;
+      navigate("/twin");
+      await Promise.allSettled([nutritionRequest, biomarkerRequest]);
     } catch (error) {
       setBloodDetailsMessage(error instanceof Error ? error.message : "Could not save biomarker details.");
+      setAiPreloading(false);
     }
   };
 
@@ -747,22 +763,30 @@ export function LandingPage() {
                 />
               </div>
               <div className="mt-5 flex flex-wrap items-center gap-3">
-                <Button type="submit" disabled={!canSubmitDetails}>Submit details</Button>
+                <Button type="submit" disabled={!canSubmitDetails || aiPreloading}>
+                  {aiPreloading ? "Generating AI plan..." : "Submit details"}
+                </Button>
                 {hasPartialBp ? <span className="text-sm font-medium text-amber-100">Enter both BP values or leave both empty.</span> : null}
                 {bloodDetailsMessage ? <span className="text-sm font-medium text-emerald-100">{bloodDetailsMessage}</span> : null}
               </div>
+              {aiPreloading ? (
+                <div className="mt-5 rounded-2xl border border-emerald-300/25 bg-emerald-300/10 p-4">
+                  <div className="flex items-center gap-3">
+                    <RefreshCw size={18} className="animate-spin text-emerald-100" />
+                    <div>
+                      <p className="text-sm font-semibold text-white">AI is generating your plan</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-300">
+                        Routine loads first. Nutrition and biomarker analysis continue in parallel.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full w-2/3 animate-pulse rounded-full bg-gradient-to-r from-emerald-300 to-blue-400" />
+                  </div>
+                </div>
+              ) : null}
             </form>
           </Card>
-        </div>
-
-        <div className="mt-6 flex justify-end">
-          <div className="w-full max-w-sm rounded-2xl border border-cyan-300/20 bg-gradient-to-br from-cyan-300/15 via-white/[0.06] to-blue-400/15 p-4 shadow-glow backdrop-blur-xl">
-            <p className="text-sm font-semibold text-white">Ready when your intake looks good</p>
-            <p className="mt-1 text-xs leading-5 text-slate-300">Continue to see your LifeTwin experience.</p>
-            <Button className="mt-4 min-h-12 w-full rounded-2xl px-5 text-base" onClick={() => navigate("/twin")}>
-              Continue to your twin <ArrowRight size={18} />
-            </Button>
-          </div>
         </div>
       </section>
     </main>

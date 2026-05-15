@@ -26,6 +26,7 @@ const INTAKE_STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
 const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
 const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
+const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type Tab = (typeof TABS)[number];
@@ -316,6 +317,15 @@ function loadCachedNutritionPlan(): NutritionPlanResponse | null {
   }
 }
 
+function loadCachedBiomarkerAnalysis(): BiomarkerAnalysisResponse | null {
+  try {
+    const saved = localStorage.getItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
+    return saved ? (JSON.parse(saved) as BiomarkerAnalysisResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
 function adaptiveImpact(priority: AdaptivePlanActivity["priority"]): RoutineItem["impact"] {
   if (priority === "critical" || priority === "high") return "High";
   if (priority === "medium") return "Med";
@@ -412,7 +422,7 @@ export function TwinPage() {
   const intakeForm = loadIntakeForm();
   const [age] = useState(numberFromDraft(intakeForm?.currentAge) ?? 34);
   const [targetAge] = useState(numberFromDraft(intakeForm?.targetTwinAge) ?? 65);
-  const [activeTab, setActiveTab] = useState<Tab>("biomarkers");
+  const [activeTab, setActiveTab] = useState<Tab>("routine");
   const [intakeBiomarkers, setIntakeBiomarkers] = useState<IntakeBiomarkers>(() => loadIntakeBiomarkers());
   const [routinePlan, setRoutinePlan] = useState<RoutinePlanResponse | null>(() => loadCachedRoutinePlan());
   const [nutritionPlan, setNutritionPlan] = useState<NutritionPlanResponse | null>(() => loadCachedNutritionPlan());
@@ -1371,7 +1381,7 @@ function RoutineTab({
             {routinePlan ? (
               <div style={{ ...cardStyle, marginTop: 16, padding: 16, borderColor: COLORS.accentMid }}>
                 <div style={{ color: COLORS.accent, fontWeight: 900, fontSize: 12, textTransform: "uppercase", letterSpacing: 1.5 }}>
-                  {routinePlan.strictness} plan | {routinePlan.generated_by === "openai" ? routinePlan.model_used : "local fallback"}
+                  {routinePlan.strictness} plan
                 </div>
                 <p style={{ color: COLORS.textSecondary, margin: "8px 0 0", fontSize: 13, lineHeight: 1.5 }}>{routinePlan.summary}</p>
                 <p style={{ color: COLORS.gold, margin: "8px 0 0", fontSize: 12, lineHeight: 1.5 }}>
@@ -1467,7 +1477,7 @@ function BiomarkersTab({
 }) {
   const [updateMessage, setUpdateMessage] = useState("");
   const [savedBiomarkers, setSavedBiomarkers] = useState<IntakeBiomarkers>(intakeBiomarkers);
-  const [analysis, setAnalysis] = useState<BiomarkerAnalysisResponse | null>(null);
+  const [analysis, setAnalysis] = useState<BiomarkerAnalysisResponse | null>(() => loadCachedBiomarkerAnalysis());
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisMessage, setAnalysisMessage] = useState("");
   const hasAnyDetails = [
@@ -1502,7 +1512,10 @@ function BiomarkersTab({
         });
         if (!response.ok) throw new Error(await response.text());
         const payload = (await response.json()) as BiomarkerAnalysisResponse;
-        if (!cancelled) setAnalysis(payload);
+        if (!cancelled) {
+          localStorage.setItem(BIOMARKER_ANALYSIS_STORAGE_KEY, JSON.stringify(payload));
+          setAnalysis(payload);
+        }
       } catch {
         if (!cancelled) setAnalysisMessage("Could not generate biomarker analysis right now.");
       } finally {
@@ -1634,7 +1647,7 @@ function BiomarkersTab({
       >
         <div style={{ fontWeight: 700, color: COLORS.accent, marginBottom: 8 }}>
           <Sparkles size={16} style={{ display: "inline-block", marginRight: 8, verticalAlign: "text-bottom" }} />
-          AI Analysis {analysis?.generated_by === "openai" ? `| ${analysis.model_used}` : analysis ? "| local fallback" : ""}
+          AI Analysis
         </div>
         {analysisLoading ? (
           <p style={{ color: COLORS.textSecondary, fontSize: 14, margin: 0, lineHeight: 1.7 }}>
