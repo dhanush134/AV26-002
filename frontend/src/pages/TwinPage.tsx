@@ -1894,10 +1894,6 @@ function RoutineTab({
   const controlsLocked = adaptiveLoading || checkinSubmitting;
   const negativeOptions = routinePlan?.negative_options || (Object.keys(NEGATIVE_LABELS) as NegativeChoice[]);
   const taskCompletionScore = routine.length ? Math.round((doneCount / routine.length) * 100) : 0;
-  const sleepPercent = higherIsBetterPercent(biomarkers.sleepHrs, 8);
-  const stepsPercent = higherIsBetterPercent(biomarkers.steps, 10000);
-  const heartRatePercent = lowerIsBetterPercent(biomarkers.heartRate, 70, 110);
-  const stressPercent = lowerIsBetterPercent(biomarkers.stress, 35, 100);
   const toggleNegativeChoice = (choice: NegativeChoice) => {
     if (controlsLocked) return;
     setNegativeChoices(
@@ -2022,12 +2018,6 @@ function RoutineTab({
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <ScoreRing score={taskCompletionScore} doneCount={doneCount} total={routine.length} />
-          <div className="lt-grid-half">
-            <MetricCard icon={<Moon size={21} />} label="Sleep" value={biomarkers.sleepHrs} unit="hrs" percent={sleepPercent} color={COLORS.purple} />
-            <MetricCard icon={<Activity size={21} />} label="Steps" value={`${(biomarkers.steps / 1000).toFixed(1)}k`} percent={stepsPercent} color={COLORS.gold} />
-            <MetricCard icon={<HeartPulse size={21} />} label="Heart rate" value={biomarkers.heartRate} unit="bpm" percent={heartRatePercent} color={COLORS.red} />
-            <MetricCard icon={<Zap size={21} />} label="Stress" value={biomarkers.stress} percent={stressPercent} color={COLORS.accent} />
-          </div>
         </div>
       </div>
     </div>
