@@ -224,6 +224,17 @@ def _completion_ratio(feedback: PlanFeedbackInput | None) -> float:
     return len(feedback.completed_activity_ids) / total if total else 0.0
 
 
+def _timeline_increase_cap(feedback: PlanFeedbackInput | None) -> int | None:
+    if feedback is None or feedback.previous_timeline_weeks is None:
+        return None
+    ratio = _completion_ratio(feedback)
+    choices = set(feedback.negative_choices)
+    high_risk_choices = {"smoking", "alcohol", "very_high_stress"}
+    high_risk_poor_day = ratio < 0.4 and bool(choices.intersection(high_risk_choices))
+    allowed_increase = 2 if high_risk_poor_day else 1 if choices or ratio < 0.85 else 0
+    return feedback.previous_timeline_weeks + allowed_increase
+
+
 def _timeline_weeks(metrics: AdaptiveMetricsInput, feedback: PlanFeedbackInput | None) -> int:
     weeks = 8
     if metrics.height_cm and metrics.weight_kg:
@@ -260,7 +271,9 @@ def _timeline_weeks(metrics: AdaptiveMetricsInput, feedback: PlanFeedbackInput |
             weeks += 2
         elif ratio < 0.5 or severe_count >= 1:
             weeks += 1
-    return max(4, min(104, weeks))
+    weeks = max(4, min(104, weeks))
+    cap = _timeline_increase_cap(feedback)
+    return min(weeks, cap) if cap is not None else weeks
 
 
 def _priority_activity(
@@ -803,6 +816,7 @@ def generate_routine_plan(db: Session, user_id: UUID, payload: AdaptivePlanReque
                 "strict_rule must be short and practical.",
                 "Summary and timeline summary must be 1-2 short sentences.",
                 "Timeline changes must be realistic: never increase by more than 1 week for a normal imperfect day or 2 weeks for a very poor day.",
+                "If missed_workout and missed_sleep_window are the only negative choices, timeline can increase by at most 1 week total.",
             ],
             max_output_tokens=4500,
         )
@@ -885,6 +899,7 @@ def save_adaptive_checkin_feedback(db: Session, user_id: UUID, payload: Adaptive
                 "completed_activity_ids": feedback.completed_activity_ids,
                 "skipped_activity_ids": feedback.skipped_activity_ids,
                 "negative_choices": feedback.negative_choices,
+                "previous_timeline_weeks": feedback.previous_timeline_weeks,
                 "notes": feedback.notes,
             }
         ),

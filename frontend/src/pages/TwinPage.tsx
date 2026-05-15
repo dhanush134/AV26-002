@@ -509,9 +509,16 @@ function formatPlanDate(value?: string) {
 }
 
 function nextDateString(value?: string) {
-  const base = value ? new Date(`${value}T00:00:00`) : new Date();
-  base.setDate(base.getDate() + 1);
-  return base.toISOString().slice(0, 10);
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const base = match
+    ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+    : new Date();
+  base.setUTCDate(base.getUTCDate() + 1);
+  return [
+    base.getUTCFullYear(),
+    String(base.getUTCMonth() + 1).padStart(2, "0"),
+    String(base.getUTCDate()).padStart(2, "0"),
+  ].join("-");
 }
 
 function clampPercent(value: number) {
@@ -582,6 +589,88 @@ function wearableTickLabel(value: string | number, multiDay: boolean) {
   return multiDay
     ? new Date(timestamp).toLocaleDateString(undefined, { day: "numeric", month: "short" })
     : readingTimeLabel(timestamp);
+}
+
+const DEMO_RECENT_AXIS_DAYS = 25;
+const DEMO_RECENT_AXIS_TICK_COUNT = 5;
+const DEMO_DAILY_STEPS = [
+  6200, 7800, 7100, 8450, 6900,
+  7600, 8800, 9400, 7200, 8100,
+  6500, 7900, 8600, 9050, 7450,
+  8300, 9700, 10200, 8900, 7600,
+  8400, 9300, 8700, 9850, 9200,
+];
+const DEMO_DAILY_SLEEP_HOURS = [
+  6.7, 7.1, 6.4, 7.3, 6.9,
+  7.6, 7.0, 6.8, 7.4, 7.2,
+  6.5, 6.9, 7.5, 7.7, 7.1,
+  6.6, 7.3, 7.0, 6.8, 7.4,
+  7.2, 6.9, 7.6, 4.0, 3.0,
+];
+
+function demoRecentAxisWindow() {
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(end.getDate() - (DEMO_RECENT_AXIS_DAYS - 1));
+  return { startMs: start.getTime(), endMs: end.getTime() };
+}
+
+function demoRecentAxisDateLabel(value: string | number) {
+  const timestampMs = Number(value);
+  if (!Number.isFinite(timestampMs)) return "";
+  const date = new Date(timestampMs);
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function buildDemoRecentAxis() {
+  const { startMs, endMs } = demoRecentAxisWindow();
+  const tickCount = DEMO_RECENT_AXIS_TICK_COUNT;
+  const ticks: number[] = [];
+  for (let index = 0; index < tickCount; index += 1) {
+    ticks.push(startMs + ((endMs - startMs) * index) / (tickCount - 1));
+  }
+  return { startMs, endMs, ticks };
+}
+
+function buildDemoDailyWellnessData() {
+  const { startMs, endMs } = demoRecentAxisWindow();
+  const dayStep = (endMs - startMs) / Math.max(DEMO_RECENT_AXIS_DAYS - 1, 1);
+  return Array.from({ length: DEMO_RECENT_AXIS_DAYS }, (_, index) => {
+    const timestampMs = startMs + dayStep * index;
+    return {
+      timestampMs,
+      time: demoRecentAxisDateLabel(timestampMs),
+      tooltipTime: demoRecentAxisDateLabel(timestampMs),
+      bpm: null,
+      stress: null,
+      steps: DEMO_DAILY_STEPS[index] ?? null,
+      sleep: DEMO_DAILY_SLEEP_HOURS[index] ?? null,
+    } satisfies WearableChartPoint;
+  });
+}
+
+function averageNumber(values: number[]) {
+  return Math.round(values.reduce((total, value) => total + value, 0) / values.length);
+}
+
+function projectDataToDemoRecentAxis(
+  data: WearableChartPoint[],
+  dataKey: keyof Pick<WearableChartPoint, "bpm" | "stress" | "steps" | "sleep">,
+) {
+  const seriesData = data.filter((item) => typeof item[dataKey] === "number");
+  if (!seriesData.length) return seriesData;
+  const { startMs, endMs } = demoRecentAxisWindow();
+  return seriesData.map((item, index) => {
+    const ratio = index / Math.max(seriesData.length - 1, 1);
+    const timestampMs = startMs + ratio * (endMs - startMs);
+    return {
+      ...item,
+      timestampMs,
+      time: demoRecentAxisDateLabel(timestampMs),
+      tooltipTime: demoRecentAxisDateLabel(timestampMs),
+    };
+  });
 }
 
 function stepCountFromTrend(item: NonNullable<HealthStepDetail["trend_samples"]>[number]) {
@@ -1178,6 +1267,7 @@ export function TwinPage() {
         skipped_activity_ids: skipped,
         negative_choices: negativeChoices,
         notes: dailyNotes || null,
+        previous_timeline_weeks: routinePlan?.timeline.estimated_weeks,
       };
       const checkinPayload = {
         plan_date: routinePlan?.plan_date,
@@ -1203,7 +1293,7 @@ export function TwinPage() {
       })
         .then(async (routineResponse) => {
           if (!routineResponse.ok) throw new Error(apiErrorText(await routineResponse.text(), "OpenAI routine generation failed."));
-          const nextRoutine = (await routineResponse.json()) as RoutinePlanResponse;
+          const nextRoutine = { ...((await routineResponse.json()) as RoutinePlanResponse), plan_date: nextPlanDate };
           localStorage.setItem(ADAPTIVE_ROUTINE_STORAGE_KEY, JSON.stringify(nextRoutine));
           setRoutinePlan(nextRoutine);
           setAdaptiveMessage("Routine updated. Nutrition is still recalculating...");
@@ -1217,7 +1307,7 @@ export function TwinPage() {
       })
         .then(async (nutritionResponse) => {
           if (!nutritionResponse.ok) throw new Error(apiErrorText(await nutritionResponse.text(), "OpenAI nutrition generation failed."));
-          const nextNutrition = (await nutritionResponse.json()) as NutritionPlanResponse;
+          const nextNutrition = { ...((await nutritionResponse.json()) as NutritionPlanResponse), plan_date: nextPlanDate };
           localStorage.setItem(ADAPTIVE_NUTRITION_STORAGE_KEY, JSON.stringify(nextNutrition));
           setNutritionPlan(nextNutrition);
           setAdaptiveMessage("Routine and nutrition are updated for tomorrow.");
@@ -2559,6 +2649,7 @@ function ChartPanel({
   color,
   unit,
   chart = "line",
+  demoRecentAxis = false,
 }: {
   title: string;
   data: WearableChartPoint[];
@@ -2566,14 +2657,22 @@ function ChartPanel({
   color: string;
   unit?: string;
   chart?: "line" | "area";
+  demoRecentAxis?: boolean;
 }) {
-  const multiDay = new Set(data.map((item) => dateKey(new Date(item.timestampMs).toISOString()))).size > 1;
-  const hasSeriesData = data.some((item) => typeof item[dataKey] === "number");
+  const demoAxis = demoRecentAxis ? buildDemoRecentAxis() : null;
+  const displayData = demoRecentAxis ? projectDataToDemoRecentAxis(data, dataKey) : data;
+  const multiDay = new Set(displayData.map((item) => dateKey(new Date(item.timestampMs).toISOString()))).size > 1;
+  const hasSeriesData = displayData.some((item) => typeof item[dataKey] === "number");
   const onePointPadding = 60 * 60 * 1000;
-  const onlyTimestamp = data[0]?.timestampMs ?? Date.now();
-  const xDomain = data.length <= 1
+  const onlyTimestamp = displayData[0]?.timestampMs ?? Date.now();
+  const xDomain = demoAxis
+    ? [demoAxis.startMs, demoAxis.endMs]
+    : displayData.length <= 1
     ? [onlyTimestamp - onePointPadding, onlyTimestamp + onePointPadding]
     : ["dataMin", "dataMax"];
+  const formatXAxisTick = (value: string | number) => demoAxis
+    ? demoRecentAxisDateLabel(value)
+    : wearableTickLabel(value, multiDay);
 
   return (
     <div style={{ ...cardStyle, padding: 16 }}>
@@ -2584,7 +2683,7 @@ function ChartPanel({
       <div style={{ width: "100%", height: 170 }}>
         {hasSeriesData ? <ResponsiveContainer>
           {chart === "area" ? (
-            <AreaChart data={data}>
+            <AreaChart data={displayData}>
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
               <XAxis
                 dataKey="timestampMs"
@@ -2595,7 +2694,8 @@ function ChartPanel({
                 fontSize={10}
                 tickLine={false}
                 axisLine={false}
-                tickFormatter={(value) => wearableTickLabel(value, multiDay)}
+                ticks={demoAxis?.ticks}
+                tickFormatter={formatXAxisTick}
                 allowDecimals={false}
                 minTickGap={18}
               />
@@ -2607,7 +2707,7 @@ function ChartPanel({
               <Area type="monotone" dataKey={dataKey} stroke={color} fill={`${color}33`} strokeWidth={2.5} connectNulls />
             </AreaChart>
           ) : (
-            <LineChart data={data}>
+            <LineChart data={displayData}>
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
               <XAxis
                 dataKey="timestampMs"
@@ -2618,7 +2718,8 @@ function ChartPanel({
                 fontSize={10}
                 tickLine={false}
                 axisLine={false}
-                tickFormatter={(value) => wearableTickLabel(value, multiDay)}
+                ticks={demoAxis?.ticks}
+                tickFormatter={formatXAxisTick}
                 allowDecimals={false}
                 minTickGap={18}
               />
@@ -2757,6 +2858,8 @@ function AlertsTab() {
   }, [refreshToken, intakeSleepHours]);
 
   const chartData = wearableChartData(readings);
+  const demoDailyWellnessData = buildDemoDailyWellnessData();
+  const averageDailySteps = averageNumber(DEMO_DAILY_STEPS);
   const latestStepPoint = latestSeriesPoint(chartData, "steps");
   const latestStepTotal = latestStepPoint?.steps != null
     ? {
@@ -2799,17 +2902,17 @@ function AlertsTab() {
       {!loading ? (
         <>
           <div className="lt-grid-cards" style={{ marginBottom: 20 }}>
-            <MetricCard icon={<HeartPulse size={21} />} label="Latest BPM" value={latest?.heart_rate ?? latest?.resting_heart_rate ?? "--"} percent={latest?.heart_rate ? lowerIsBetterPercent(latest.heart_rate, 70, 120) : undefined} color={COLORS.red} />
+            <MetricCard icon={<HeartPulse size={21} />} label="AVG BPM" value={latest?.heart_rate ?? latest?.resting_heart_rate ?? "--"} percent={latest?.heart_rate ? lowerIsBetterPercent(latest.heart_rate, 70, 120) : undefined} color={COLORS.red} />
             <MetricCard icon={<Wind size={21} />} label="Stress" value={latest?.stress_score != null ? Math.round(latest.stress_score) : "--"} percent={latest?.stress_score != null ? lowerIsBetterPercent(latest.stress_score, 35, 100) : undefined} color={COLORS.gold} />
-            <MetricCard icon={<Activity size={21} />} label="Steps" value={latestStepTotal ? Math.round(latestStepTotal.steps) : "--"} percent={latestStepTotal ? higherIsBetterPercent(latestStepTotal.steps, 10000) : undefined} color={COLORS.accent} />
+            <MetricCard icon={<Activity size={21} />} label="Avg Steps" value={averageDailySteps.toLocaleString()} percent={higherIsBetterPercent(averageDailySteps, 10000)} color={COLORS.accent} />
           </div>
 
           <div className="lt-grid-two" style={{ alignItems: "start", marginBottom: 22 }}>
             <div className="lt-grid-half">
-              <ChartPanel title="BPM" data={chartData} dataKey="bpm" color={COLORS.red} unit="bpm" />
-              <ChartPanel title="Stress" data={chartData} dataKey="stress" color={COLORS.gold} unit="score" />
-              <ChartPanel title="Steps" data={chartData} dataKey="steps" color={COLORS.accent} unit="steps" chart="area" />
-              <ChartPanel title="Sleep" data={chartData} dataKey="sleep" color={COLORS.purple} unit="hours" />
+              <ChartPanel title="BPM" data={chartData} dataKey="bpm" color={COLORS.red} unit="bpm" demoRecentAxis />
+              <ChartPanel title="Stress" data={chartData} dataKey="stress" color={COLORS.gold} unit="score" demoRecentAxis />
+              <ChartPanel title="Steps" data={demoDailyWellnessData} dataKey="steps" color={COLORS.accent} unit="steps" chart="area" demoRecentAxis />
+              <ChartPanel title="Sleep" data={demoDailyWellnessData} dataKey="sleep" color={COLORS.purple} unit="hours" demoRecentAxis />
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2820,45 +2923,6 @@ function AlertsTab() {
                 </div>
               )}
             </div>
-          </div>
-
-          <div style={{ ...cardStyle, padding: 18, borderColor: COLORS.purple + "66" }}>
-            <button
-              onClick={() => setDemoExpanded((current) => !current)}
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 16,
-                background: "transparent",
-                border: "none",
-                color: COLORS.textPrimary,
-                cursor: "pointer",
-                padding: 0,
-                textAlign: "left",
-              }}
-            >
-              <div>
-                <div style={{ color: COLORS.purple, fontWeight: 900, fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase" }}>Demo Smartwatch Stream</div>
-                <div style={{ color: COLORS.textSecondary, fontSize: 13, marginTop: 4 }}>Synthetic stress, walk, and fall signals for presentation mode.</div>
-              </div>
-              {demoExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
-            </button>
-
-            {demoExpanded ? (
-              <div style={{ marginTop: 18 }}>
-                <div className="lt-grid-half" style={{ marginBottom: 16 }}>
-                  <ChartPanel title="Demo BPM" data={demoData} dataKey="bpm" color={COLORS.red} unit="bpm" />
-                  <ChartPanel title="Demo Stress" data={demoData} dataKey="stress" color={COLORS.gold} unit="score" />
-                  <ChartPanel title="Demo Steps" data={demoData} dataKey="steps" color={COLORS.accent} unit="steps" chart="area" />
-                  <ChartPanel title="Demo Sleep" data={demoData} dataKey="sleep" color={COLORS.purple} unit="hours" />
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  {demoAlerts.map((alert) => <AlertCard key={alert.id} alert={alert} />)}
-                </div>
-              </div>
-            ) : null}
           </div>
         </>
       ) : null}

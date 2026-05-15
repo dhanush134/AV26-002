@@ -58,6 +58,7 @@ class PlanFeedbackInput(StrictModel):
     skipped_activity_ids: list[str] = Field(default_factory=list, max_length=30)
     negative_choices: list[NegativeChoice] = Field(default_factory=list, max_length=10)
     notes: str | None = Field(default=None, max_length=2000)
+    previous_timeline_weeks: int | None = Field(default=None, ge=1, le=260)
 
 
 class AdaptivePlanRequest(StrictModel):
