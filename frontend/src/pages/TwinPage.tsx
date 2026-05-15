@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { Activity, Circle, Dna, Dumbbell, HeartPulse, Moon, RefreshCw, Sparkles, Sun, TestTube2, Zap } from "lucide-react";
+import { Activity, AlertTriangle, Bell, ChevronDown, ChevronUp, Circle, Dna, Dumbbell, HeartPulse, Moon, RefreshCw, Sparkles, Sun, TestTube2, Wind, Zap } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 const COLORS = {
   bg: "#060810",
@@ -21,7 +22,7 @@ const COLORS = {
   textMuted: "#4B5563",
 };
 
-const TABS = ["routine", "biomarkers", "nutrition", "twin"] as const;
+const TABS = ["routine", "biomarkers", "nutrition", "twin", "alerts"] as const;
 const INTAKE_STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
 const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
@@ -183,6 +184,36 @@ type BiomarkerAnalysisResponse = {
   watch_items: string[];
   next_actions: string[];
   safety_notes: string[];
+};
+
+type WearableReading = {
+  id?: string;
+  timestamp: string;
+  heart_rate?: number | null;
+  resting_heart_rate?: number | null;
+  steps?: number | null;
+  active_minutes?: number | null;
+  sleep_hours?: number | null;
+  sleep_quality?: number | null;
+  stress_score?: number | null;
+  spo2?: number | null;
+  source?: string;
+};
+
+type AlertItem = {
+  id: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  message: string;
+  recommended_action: string;
+  source: string;
+  timestamp?: string;
+};
+
+type DemoWatchPoint = WearableReading & {
+  event?: "stress" | "break" | "walk" | "fall";
+  altitude_delta_m?: number;
+  acceleration_g?: number;
 };
 
 const appCss = `
@@ -416,6 +447,125 @@ const NEGATIVE_LABELS: Record<NegativeChoice, string> = {
   low_water: "Low water",
   excess_caffeine: "Excess caffeine",
 };
+
+const SYNTHETIC_WATCH_DEMO: DemoWatchPoint[] = [
+  { timestamp: "2026-05-15T08:00:00+05:30", heart_rate: 78, stress_score: 38, steps: 900, sleep_hours: 6.4, event: "break", source: "synthetic" },
+  { timestamp: "2026-05-15T10:30:00+05:30", heart_rate: 112, stress_score: 84, steps: 1600, active_minutes: 0, event: "stress", source: "synthetic" },
+  { timestamp: "2026-05-15T11:00:00+05:30", heart_rate: 82, stress_score: 54, steps: 2400, active_minutes: 8, event: "walk", source: "synthetic" },
+  { timestamp: "2026-05-15T15:20:00+05:30", heart_rate: 128, stress_score: 92, steps: 2600, altitude_delta_m: -1.8, acceleration_g: 2.9, event: "fall", source: "synthetic" },
+  { timestamp: "2026-05-15T19:30:00+05:30", heart_rate: 88, stress_score: 48, steps: 6200, active_minutes: 32, event: "walk", source: "synthetic" },
+];
+
+function readingTimeLabel(timestamp: string) {
+  return new Date(timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function wearableChartData(readings: WearableReading[]) {
+  return readings
+    .slice()
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .map((item) => ({
+      time: readingTimeLabel(item.timestamp),
+      bpm: item.heart_rate ?? item.resting_heart_rate ?? null,
+      stress: item.stress_score ?? null,
+      steps: item.steps ?? null,
+      sleep: item.sleep_hours ?? null,
+    }));
+}
+
+function deriveWearableAlerts(readings: WearableReading[]): AlertItem[] {
+  const sorted = readings.slice().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  const latest = sorted[0];
+  const alerts: AlertItem[] = [];
+  if (!latest) return alerts;
+  const latestBpm = latest.heart_rate ?? latest.resting_heart_rate;
+
+  if (latest.stress_score != null && latest.stress_score >= 80) {
+    alerts.push({
+      id: "derived-stress",
+      severity: "warning",
+      title: "Stress is running high",
+      message: `Latest stress score is ${Math.round(latest.stress_score)}.`,
+      recommended_action: "Take a 1-minute breathing break now.",
+      source: "wearable",
+      timestamp: latest.timestamp,
+    });
+  }
+  if (latestBpm != null && latestBpm >= 110 && (latest.active_minutes ?? 0) <= 5) {
+    alerts.push({
+      id: "derived-high-bpm-rest",
+      severity: "critical",
+      title: "High BPM while inactive",
+      message: `BPM is ${latestBpm} with low activity recorded.`,
+      recommended_action: "Sit down, hydrate, recheck the watch fit, and avoid intense activity if this repeats.",
+      source: "wearable",
+      timestamp: latest.timestamp,
+    });
+  }
+  if ((latest.steps ?? 0) < 2500) {
+    alerts.push({
+      id: "derived-walk",
+      severity: "info",
+      title: "Movement is low",
+      message: `Steps are at ${latest.steps ?? 0}.`,
+      recommended_action: "Take a 10-minute walk if your body feels okay.",
+      source: "wearable",
+      timestamp: latest.timestamp,
+    });
+  }
+  if (latest.sleep_hours != null && latest.sleep_hours < 6) {
+    alerts.push({
+      id: "derived-sleep",
+      severity: "warning",
+      title: "Short sleep detected",
+      message: `Last sleep was ${latest.sleep_hours.toFixed(1)} hours.`,
+      recommended_action: "Keep workout intensity easy and protect tonight's sleep window.",
+      source: "wearable",
+      timestamp: latest.timestamp,
+    });
+  }
+  return alerts;
+}
+
+function deriveSyntheticAlerts(readings: DemoWatchPoint[]): AlertItem[] {
+  const alerts: AlertItem[] = [];
+  readings.forEach((item, index) => {
+    if (item.event === "fall") {
+      alerts.push({
+        id: `demo-fall-${index}`,
+        severity: "critical",
+        title: "Possible fall or height drop",
+        message: `Synthetic watch stream shows ${item.acceleration_g}g impact and ${item.altitude_delta_m}m altitude change.`,
+        recommended_action: "Show emergency prompt: Are you okay? Notify contact if no response.",
+        source: "synthetic demo",
+        timestamp: item.timestamp,
+      });
+    }
+    if (item.event === "stress") {
+      alerts.push({
+        id: `demo-stress-${index}`,
+        severity: "warning",
+        title: "Stress spike",
+        message: `Stress ${item.stress_score}, BPM ${item.heart_rate}.`,
+        recommended_action: "Take a deep breath for one minute.",
+        source: "synthetic demo",
+        timestamp: item.timestamp,
+      });
+    }
+    if (item.event === "walk") {
+      alerts.push({
+        id: `demo-walk-${index}`,
+        severity: "info",
+        title: "Walk recovery",
+        message: "Steps and active minutes are increasing after an alert.",
+        recommended_action: "Continue light walking until BPM settles.",
+        source: "synthetic demo",
+        timestamp: item.timestamp,
+      });
+    }
+  });
+  return alerts;
+}
 
 export function TwinPage() {
   const navigate = useNavigate();
@@ -750,6 +900,8 @@ export function TwinPage() {
       ) : null}
 
       {activeTab === "twin" ? <TwinTab clampedScore={clampedScore} routinePlan={routinePlan} /> : null}
+
+      {activeTab === "alerts" ? <AlertsTab /> : null}
 
     </div>
   );
@@ -2025,6 +2177,247 @@ function TwinTab({ clampedScore, routinePlan }: { clampedScore: number; routineP
           <ProgressBar value={clampedScore} color={COLORS.accent} height={6} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function severityColor(severity: AlertItem["severity"]) {
+  if (severity === "critical") return COLORS.red;
+  if (severity === "warning") return COLORS.gold;
+  return COLORS.accent;
+}
+
+function ChartPanel({
+  title,
+  data,
+  dataKey,
+  color,
+  unit,
+  chart = "line",
+}: {
+  title: string;
+  data: Array<Record<string, string | number | null>>;
+  dataKey: string;
+  color: string;
+  unit?: string;
+  chart?: "line" | "area";
+}) {
+  return (
+    <div style={{ ...cardStyle, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
+        <div style={{ color: COLORS.textPrimary, fontWeight: 900, fontSize: 14 }}>{title}</div>
+        {unit ? <div style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: 800 }}>{unit}</div> : null}
+      </div>
+      <div style={{ width: "100%", height: 170 }}>
+        <ResponsiveContainer>
+          {chart === "area" ? (
+            <AreaChart data={data}>
+              <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} />
+              <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={32} />
+              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }} />
+              <Area type="monotone" dataKey={dataKey} stroke={color} fill={`${color}33`} strokeWidth={2.5} connectNulls />
+            </AreaChart>
+          ) : (
+            <LineChart data={data}>
+              <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} />
+              <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={32} />
+              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }} />
+              <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2.5} dot={false} connectNulls />
+            </LineChart>
+          )}
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+function AlertCard({ alert }: { alert: AlertItem }) {
+  const color = severityColor(alert.severity);
+  return (
+    <div style={{ ...cardStyle, padding: 16, borderColor: `${color}66`, background: `${color}12` }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+        <div style={{ color, background: `${color}22`, borderRadius: 12, padding: 8 }}>
+          {alert.severity === "info" ? <Bell size={18} /> : <AlertTriangle size={18} />}
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ color: COLORS.textPrimary, fontWeight: 900, fontSize: 14 }}>{alert.title}</div>
+            <div style={{ color, fontSize: 10, fontWeight: 900, letterSpacing: 1, textTransform: "uppercase" }}>{alert.severity}</div>
+          </div>
+          <p style={{ color: COLORS.textSecondary, fontSize: 12, lineHeight: 1.55, margin: "6px 0 0" }}>{alert.message}</p>
+          <p style={{ color: COLORS.textPrimary, fontSize: 12, lineHeight: 1.55, margin: "8px 0 0", fontWeight: 800 }}>
+            {alert.recommended_action}
+          </p>
+          <div style={{ color: COLORS.textMuted, fontSize: 10, marginTop: 8 }}>
+            {alert.source}
+            {alert.timestamp ? ` | ${readingTimeLabel(alert.timestamp)}` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlertsTab() {
+  const [readings, setReadings] = useState<WearableReading[]>([]);
+  const [backendAlerts, setBackendAlerts] = useState<AlertItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+  const [demoExpanded, setDemoExpanded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadAlerts = async () => {
+      setLoading(true);
+      setMessage("");
+      try {
+        const userId = await getSingleUserId();
+        if (!userId) {
+          setMessage("Submit intake details first to read wearable alerts.");
+          return;
+        }
+        const [readingsResponse, alertsResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/v1/users/${userId}/wearable-readings?limit=60`),
+          fetch(`${API_BASE_URL}/api/v1/users/${userId}/alerts`),
+        ]);
+        if (!readingsResponse.ok) throw new Error(await readingsResponse.text());
+        const wearablePayload = (await readingsResponse.json()) as WearableReading[];
+        const alertPayload = alertsResponse.ok ? (await alertsResponse.json()) as Array<{
+          id: string;
+          severity: AlertItem["severity"];
+          title: string;
+          message: string;
+          recommended_action: string;
+          source?: string | null;
+          created_at?: string;
+        }> : [];
+        if (cancelled) return;
+        setReadings(wearablePayload);
+        setBackendAlerts(
+          alertPayload.map((item) => ({
+            id: item.id,
+            severity: item.severity,
+            title: item.title,
+            message: item.message,
+            recommended_action: item.recommended_action,
+            source: item.source || "alert engine",
+            timestamp: item.created_at,
+          })),
+        );
+      } catch {
+        if (!cancelled) setMessage("Could not load wearable alerts right now.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    loadAlerts();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const chartData = wearableChartData(readings);
+  const derivedAlerts = deriveWearableAlerts(readings);
+  const allAlerts = [...derivedAlerts, ...backendAlerts].slice(0, 8);
+  const latest = readings.slice().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
+  const demoData = wearableChartData(SYNTHETIC_WATCH_DEMO);
+  const demoAlerts = deriveSyntheticAlerts(SYNTHETIC_WATCH_DEMO);
+
+  return (
+    <div className="lt-page" style={{ maxWidth: 1120 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 18, alignItems: "flex-start", flexWrap: "wrap", marginBottom: 28 }}>
+        <div>
+          <h2 style={{ fontSize: 28, fontWeight: 900, letterSpacing: -1, margin: 0 }}>Wearable Alerts</h2>
+          <p style={{ color: COLORS.textSecondary, marginTop: 8, fontSize: 14 }}>
+            Smartwatch readings mapped into break, breath, walk, recovery, and safety alerts.
+          </p>
+        </div>
+        <GhostButton onClick={() => window.location.reload()}>
+          <RefreshCw size={15} /> Refresh
+        </GhostButton>
+      </div>
+
+      {loading ? (
+        <div style={{ ...cardStyle, padding: 22, display: "flex", alignItems: "center", gap: 12 }}>
+          <RefreshCw size={18} style={{ color: COLORS.accent, animation: "spin 1s linear infinite" }} />
+          <div style={{ color: COLORS.textSecondary, fontSize: 14 }}>Reading wearable stream and generating alerts...</div>
+        </div>
+      ) : null}
+
+      {!loading && message ? (
+        <div style={{ ...cardStyle, padding: 18, color: COLORS.textSecondary, marginBottom: 18 }}>{message}</div>
+      ) : null}
+
+      {!loading ? (
+        <>
+          <div className="lt-grid-cards" style={{ marginBottom: 20 }}>
+            <MetricCard icon={<HeartPulse size={21} />} label="Latest BPM" value={latest?.heart_rate ?? latest?.resting_heart_rate ?? "--"} percent={latest?.heart_rate ? lowerIsBetterPercent(latest.heart_rate, 70, 120) : undefined} color={COLORS.red} />
+            <MetricCard icon={<Wind size={21} />} label="Stress" value={latest?.stress_score != null ? Math.round(latest.stress_score) : "--"} percent={latest?.stress_score != null ? lowerIsBetterPercent(latest.stress_score, 35, 100) : undefined} color={COLORS.gold} />
+            <MetricCard icon={<Activity size={21} />} label="Steps" value={latest?.steps ?? "--"} percent={latest?.steps != null ? higherIsBetterPercent(latest.steps, 10000) : undefined} color={COLORS.accent} />
+          </div>
+
+          <div className="lt-grid-two" style={{ alignItems: "start", marginBottom: 22 }}>
+            <div className="lt-grid-half">
+              <ChartPanel title="BPM" data={chartData} dataKey="bpm" color={COLORS.red} unit="bpm" />
+              <ChartPanel title="Stress" data={chartData} dataKey="stress" color={COLORS.gold} unit="score" />
+              <ChartPanel title="Steps" data={chartData} dataKey="steps" color={COLORS.accent} unit="steps" chart="area" />
+              <ChartPanel title="Sleep" data={chartData} dataKey="sleep" color={COLORS.purple} unit="hours" />
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <SectionLabel color={COLORS.red}>Live Alert Stack</SectionLabel>
+              {allAlerts.length ? allAlerts.map((alert) => <AlertCard key={`${alert.source}-${alert.id}`} alert={alert} />) : (
+                <div style={{ ...cardStyle, padding: 18, color: COLORS.textSecondary, fontSize: 13 }}>
+                  No active wearable alerts from the available readings.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ ...cardStyle, padding: 18, borderColor: COLORS.purple + "66" }}>
+            <button
+              onClick={() => setDemoExpanded((current) => !current)}
+              style={{
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 16,
+                background: "transparent",
+                border: "none",
+                color: COLORS.textPrimary,
+                cursor: "pointer",
+                padding: 0,
+                textAlign: "left",
+              }}
+            >
+              <div>
+                <div style={{ color: COLORS.purple, fontWeight: 900, fontSize: 12, letterSpacing: 1.5, textTransform: "uppercase" }}>Demo Smartwatch Stream</div>
+                <div style={{ color: COLORS.textSecondary, fontSize: 13, marginTop: 4 }}>Synthetic stress, walk, and fall signals for presentation mode.</div>
+              </div>
+              {demoExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+            </button>
+
+            {demoExpanded ? (
+              <div style={{ marginTop: 18 }}>
+                <div className="lt-grid-half" style={{ marginBottom: 16 }}>
+                  <ChartPanel title="Demo BPM" data={demoData} dataKey="bpm" color={COLORS.red} unit="bpm" />
+                  <ChartPanel title="Demo Stress" data={demoData} dataKey="stress" color={COLORS.gold} unit="score" />
+                  <ChartPanel title="Demo Steps" data={demoData} dataKey="steps" color={COLORS.accent} unit="steps" chart="area" />
+                  <ChartPanel title="Demo Sleep" data={demoData} dataKey="sleep" color={COLORS.purple} unit="hours" />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {demoAlerts.map((alert) => <AlertCard key={alert.id} alert={alert} />)}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
