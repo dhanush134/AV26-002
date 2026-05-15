@@ -30,6 +30,7 @@ const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
 const ADAPTIVE_PLAN_PENDING_STORAGE_KEY = "lifetwin_adaptive_plan_pending_v1";
 const ADAPTIVE_PLAN_UPDATED_EVENT = "lifetwin-adaptive-plan-updated";
+const SAMSUNG_DAILY_HEALTH_STORAGE_KEY = "lifetwin_samsung_daily_health_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 type Tab = (typeof TABS)[number];
@@ -194,6 +195,7 @@ type WearableReading = {
   heart_rate?: number | null;
   resting_heart_rate?: number | null;
   steps?: number | null;
+  step_mode?: "incremental" | "total";
   active_minutes?: number | null;
   sleep_hours?: number | null;
   sleep_quality?: number | null;
@@ -204,7 +206,7 @@ type WearableReading = {
 
 type HealthDailySummary = {
   id?: string;
-  date: string;
+  date?: string | null;
   steps?: number | null;
   avg_heart_rate?: number | null;
   max_heart_rate?: number | null;
@@ -214,6 +216,31 @@ type HealthDailySummary = {
   stress_max_score?: number | null;
   sleep_minutes?: number | null;
   sleep_score?: number | null;
+};
+
+type HealthHeartRateDetail = {
+  samples?: Array<{ start_time?: string | null; bpm?: number | null; max_bpm?: number | null }>;
+  hourly_aggregates?: Array<{ hour?: string | null; avg_bpm?: number | null }>;
+};
+
+type HealthStepDetail = {
+  intervals?: Array<{ start_time?: string | null; steps?: number | null }>;
+  trend_samples?: Array<{
+    start_time?: string | null;
+    sample_time?: string | null;
+    steps?: number | null;
+    walk_step_count?: number | null;
+    run_step_count?: number | null;
+  }>;
+  daily_summaries?: Array<{ date?: string | null; step_count?: number | null; active_time_seconds?: number | null }>;
+  hourly_aggregates?: Array<{ hour?: string | null; steps?: number | null }>;
+  daily_aggregates?: Array<{ date?: string | null; steps?: number | null }>;
+};
+
+type HealthStressDetail = {
+  samples?: Array<{ start_time?: string | null; score?: number | null; max_score?: number | null }>;
+  periods?: Array<{ start_time?: string | null; score?: number | null; max_score?: number | null }>;
+  hourly_aggregates?: Array<{ hour?: string | null; avg_score?: number | null }>;
 };
 
 type AlertItem = {
@@ -230,6 +257,16 @@ type DemoWatchPoint = WearableReading & {
   event?: "stress" | "break" | "walk" | "fall";
   altitude_delta_m?: number;
   acceleration_g?: number;
+};
+
+type WearableChartPoint = {
+  timestampMs: number;
+  time: string;
+  tooltipTime: string;
+  bpm: number | null;
+  stress: number | null;
+  steps: number | null;
+  sleep: number | null;
 };
 
 const appCss = `
@@ -409,6 +446,16 @@ function loadCachedBiomarkerAnalysis(): BiomarkerAnalysisResponse | null {
   }
 }
 
+function loadCachedSamsungDailyHealth(): HealthDailySummary[] {
+  try {
+    const saved = localStorage.getItem(SAMSUNG_DAILY_HEALTH_STORAGE_KEY);
+    if (!saved) return [];
+    return JSON.parse(saved) as HealthDailySummary[];
+  } catch {
+    return [];
+  }
+}
+
 function adaptiveImpact(priority: AdaptivePlanActivity["priority"]): RoutineItem["impact"] {
   if (priority === "critical" || priority === "high") return "High";
   if (priority === "medium") return "Med";
@@ -524,21 +571,154 @@ function readingDateTimeLabel(timestamp: string) {
   })}`;
 }
 
-function wearableChartData(readings: WearableReading[], preferDateLabels = false) {
-  const sorted = readings.slice().sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  const uniqueTimeLabels = new Set(sorted.map((item) => readingTimeLabel(item.timestamp))).size;
-  const useDateLabels = preferDateLabels || (sorted.length > 1 && uniqueTimeLabels <= Math.ceil(sorted.length * 0.35));
+function wearableAxisLabel(timestamp: string, multiDay: boolean) {
+  return multiDay ? readingDateTimeLabel(timestamp) : readingTimeLabel(timestamp);
+}
+
+function wearableTickLabel(value: string | number, multiDay: boolean) {
+  const timestampMs = Number(value);
+  if (!Number.isFinite(timestampMs)) return "";
+  const timestamp = new Date(timestampMs).toISOString();
+  return multiDay
+    ? new Date(timestamp).toLocaleDateString(undefined, { day: "numeric", month: "short" })
+    : readingTimeLabel(timestamp);
+}
+
+function stepCountFromTrend(item: NonNullable<HealthStepDetail["trend_samples"]>[number]) {
+  return item.steps ?? (item.walk_step_count ?? 0) + (item.run_step_count ?? 0);
+}
+
+function wearableChartData(readings: WearableReading[]) {
+  const sorted = readings
+    .filter((item) => Number.isFinite(new Date(item.timestamp).getTime()))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const uniqueDays = new Set(sorted.map((item) => dateKey(item.timestamp))).size;
+  const multiDay = uniqueDays > 1;
+  const stepReadings = sorted.filter((item) => typeof item.steps === "number" && item.steps > 0);
+  const stepValues = stepReadings.map((item) => item.steps as number);
+  const useCumulativeSteps =
+    stepReadings.some((item) => item.step_mode === "incremental") ||
+    (stepValues.length > 3 && Math.max(...stepValues) < 3000);
+  const cumulativeStepsByDay = new Map<string, number>();
 
   return sorted
-    .map((item, index) => ({
-      time: useDateLabels ? readingDateLabel(item.timestamp) : readingTimeLabel(item.timestamp),
-      tooltipTime: readingDateTimeLabel(item.timestamp),
-      point: index + 1,
-      bpm: item.heart_rate ?? item.resting_heart_rate ?? null,
-      stress: item.stress_score ?? null,
-      steps: item.steps ?? null,
-      sleep: item.sleep_hours ?? null,
-    }));
+    .map((item) => {
+      const day = dateKey(item.timestamp);
+      let steps = item.steps ?? null;
+      if (useCumulativeSteps) {
+        if (typeof item.steps === "number" && item.steps > 0) {
+          const nextSteps = (cumulativeStepsByDay.get(day) || 0) + item.steps;
+          cumulativeStepsByDay.set(day, nextSteps);
+          steps = nextSteps;
+        } else {
+          steps = cumulativeStepsByDay.get(day) ?? null;
+        }
+      }
+      return {
+        timestampMs: new Date(item.timestamp).getTime(),
+        time: wearableAxisLabel(item.timestamp, multiDay),
+        tooltipTime: readingDateTimeLabel(item.timestamp),
+        bpm: item.heart_rate ?? item.resting_heart_rate ?? null,
+        stress: item.stress_score ?? null,
+        steps,
+        sleep: item.sleep_hours ?? null,
+      };
+    }) satisfies WearableChartPoint[];
+}
+
+function dateKey(timestamp: string | null | undefined) {
+  if (!timestamp) return "";
+  const isoDate = timestamp.match(/^\d{4}-\d{2}-\d{2}/)?.[0];
+  if (isoDate) return isoDate;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function latestDateKey(values: Array<string | null | undefined>) {
+  const sorted = values
+    .map(dateKey)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+  return sorted[sorted.length - 1];
+}
+
+function dayWindowParams(day: string | undefined) {
+  const params = new URLSearchParams({ limit: "10000" });
+  if (day) {
+    params.set("from_time", `${day}T00:00:00+05:30`);
+    params.set("to_time", `${day}T23:59:59+05:30`);
+  }
+  return params.toString();
+}
+
+function hasUsefulWearableSignal(readings: WearableReading[]) {
+  return readings.some((item) =>
+    (item.heart_rate ?? 0) > 0 ||
+    (item.resting_heart_rate ?? 0) > 0 ||
+    (item.steps ?? 0) > 0 ||
+    (item.stress_score ?? 0) > 0 ||
+    (item.sleep_hours ?? 0) > 0,
+  );
+}
+
+function hourKey(timestamp: string | null | undefined) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  date.setMinutes(0, 0, 0);
+  return date.toISOString();
+}
+
+function mergeDailyWearableReadings(primary: WearableReading[], backup: WearableReading[]) {
+  const merged = new Map<string, WearableReading>();
+  [...backup, ...primary].forEach((item) => {
+    const key = dateKey(item.timestamp);
+    if (!key) return;
+    const existing = merged.get(key) || { id: `day-${key}`, timestamp: `${key}T12:00:00+05:30`, source: item.source || "samsung health" };
+    merged.set(key, {
+      ...existing,
+      heart_rate: item.heart_rate ?? existing.heart_rate ?? null,
+      resting_heart_rate: item.resting_heart_rate ?? existing.resting_heart_rate ?? null,
+      steps: item.steps ?? existing.steps ?? null,
+      step_mode: item.step_mode ?? existing.step_mode,
+      active_minutes: item.active_minutes ?? existing.active_minutes ?? null,
+      sleep_hours: item.sleep_hours ?? existing.sleep_hours ?? null,
+      sleep_quality: item.sleep_quality ?? existing.sleep_quality ?? null,
+      stress_score: item.stress_score ?? existing.stress_score ?? null,
+      spo2: item.spo2 ?? existing.spo2 ?? null,
+      source: item.source || existing.source,
+    });
+  });
+  return Array.from(merged.values())
+    .filter((item) => hasUsefulWearableSignal([item]))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+}
+
+function withSleepFallback(readings: WearableReading[], sleepHours?: number) {
+  if (!sleepHours || readings.some((item) => (item.sleep_hours ?? 0) > 0)) return readings;
+  return readings.map((item) => ({ ...item, sleep_hours: sleepHours }));
+}
+
+function upsertReading(
+  map: Map<string, WearableReading>,
+  timestamp: string,
+  values: Partial<WearableReading>,
+) {
+  const existing = map.get(timestamp) || { id: `samsung-${timestamp}`, timestamp, source: "samsung health" };
+  map.set(timestamp, { ...existing, ...values, source: "samsung health" });
+}
+
+function hasStepReadingOnDay(readings: Map<string, WearableReading>, day: string) {
+  return Array.from(readings.values()).some((reading) => reading.timestamp.startsWith(day) && (reading.steps ?? 0) > 0);
+}
+
+function latestSeriesPoint(data: WearableChartPoint[], dataKey: keyof Pick<WearableChartPoint, "bpm" | "stress" | "steps" | "sleep">) {
+  for (let index = data.length - 1; index >= 0; index -= 1) {
+    const value = data[index][dataKey];
+    if (typeof value === "number") return data[index];
+  }
+  return undefined;
 }
 
 function dailySummariesToWearableReadings(summaries: HealthDailySummary[]) {
@@ -550,6 +730,7 @@ function dailySummariesToWearableReadings(summaries: HealthDailySummary[]) {
       heart_rate: item.avg_heart_rate != null ? Math.round(item.avg_heart_rate) : item.max_heart_rate != null ? Math.round(item.max_heart_rate) : null,
       resting_heart_rate: item.avg_heart_rate != null ? Math.round(item.avg_heart_rate) : null,
       steps: item.steps ?? null,
+      step_mode: item.steps != null ? "total" : undefined,
       active_minutes:
         item.active_time_seconds != null
           ? Math.round(item.active_time_seconds / 60)
@@ -563,14 +744,127 @@ function dailySummariesToWearableReadings(summaries: HealthDailySummary[]) {
     })) satisfies WearableReading[];
 }
 
-function deriveWearableAlerts(readings: WearableReading[]): AlertItem[] {
+function samsungDetailsToWearableReadings(
+  heartRate: HealthHeartRateDetail,
+  steps: HealthStepDetail,
+  stress: HealthStressDetail,
+  summaries: HealthDailySummary[],
+) {
+  const readings = new Map<string, WearableReading>();
+
+  heartRate.samples?.forEach((item) => {
+    const timestamp = item.start_time || "";
+    const bpm = item.bpm ?? item.max_bpm;
+    if (timestamp && bpm != null && bpm > 0) upsertReading(readings, timestamp, { heart_rate: Math.round(bpm) });
+  });
+  if (!readings.size) {
+    heartRate.hourly_aggregates?.forEach((item) => {
+      const timestamp = hourKey(item.hour);
+      if (timestamp && item.avg_bpm != null && item.avg_bpm > 0) {
+        upsertReading(readings, timestamp, { heart_rate: Math.round(item.avg_bpm), resting_heart_rate: Math.round(item.avg_bpm) });
+      }
+    });
+  }
+
+  const stepIntervals = (steps.intervals || []).filter((item) => item.start_time && item.steps != null && item.steps > 0);
+  const stepTrendSamples = (steps.trend_samples || []).filter((item) => {
+    const timestamp = item.start_time || item.sample_time;
+    const stepCount = stepCountFromTrend(item);
+    return timestamp && stepCount != null && stepCount > 0;
+  });
+  const stepHourlyAggregates = (steps.hourly_aggregates || []).filter((item) => item.hour && item.steps != null && item.steps > 0);
+
+  if (stepIntervals.length) {
+    stepIntervals.forEach((item) => {
+      const timestamp = item.start_time || "";
+      const existingSteps = readings.get(timestamp)?.steps ?? 0;
+      upsertReading(readings, timestamp, { steps: existingSteps + (item.steps || 0), step_mode: "incremental" });
+    });
+  } else if (stepTrendSamples.length) {
+    stepTrendSamples.forEach((item) => {
+      const timestamp = item.start_time || item.sample_time || "";
+      const stepCount = stepCountFromTrend(item);
+      if (timestamp && stepCount != null && stepCount > 0) {
+        const existingSteps = readings.get(timestamp)?.steps ?? 0;
+        upsertReading(readings, timestamp, { steps: existingSteps + stepCount, step_mode: "incremental" });
+      }
+    });
+  } else if (stepHourlyAggregates.length) {
+    stepHourlyAggregates.forEach((item) => {
+      const timestamp = hourKey(item.hour);
+      if (timestamp && item.steps != null && item.steps > 0) {
+        const existingSteps = readings.get(timestamp)?.steps ?? 0;
+        upsertReading(readings, timestamp, { steps: existingSteps + item.steps, step_mode: "incremental" });
+      }
+    });
+  }
+
+  steps.daily_aggregates?.forEach((item) => {
+    if (!item.date || item.steps == null || item.steps <= 0 || hasStepReadingOnDay(readings, item.date)) return;
+    upsertReading(readings, `${item.date}T17:00:00+05:30`, { steps: item.steps, step_mode: "total" });
+  });
+  steps.daily_summaries?.forEach((item) => {
+    if (!item.date || item.step_count == null || item.step_count <= 0 || hasStepReadingOnDay(readings, item.date)) return;
+    const values: Partial<WearableReading> = { steps: item.step_count, step_mode: "total" };
+    if (item.active_time_seconds != null && item.active_time_seconds > 0) {
+      values.active_minutes = Math.round(item.active_time_seconds / 60);
+    }
+    upsertReading(readings, `${item.date}T17:00:00+05:30`, values);
+  });
+
+  stress.samples?.forEach((item) => {
+    const timestamp = item.start_time || "";
+    const score = item.score ?? item.max_score;
+    if (timestamp && score != null && score > 0) upsertReading(readings, timestamp, { stress_score: score });
+  });
+  stress.periods?.forEach((item) => {
+    const timestamp = item.start_time || "";
+    const score = item.score ?? item.max_score;
+    if (timestamp && score != null && score > 0) upsertReading(readings, timestamp, { stress_score: score });
+  });
+  stress.hourly_aggregates?.forEach((item) => {
+    const timestamp = hourKey(item.hour);
+    if (timestamp && item.avg_score != null && item.avg_score > 0) {
+      upsertReading(readings, timestamp, { stress_score: item.avg_score });
+    }
+  });
+
+  summaries.forEach((item) => {
+    if (!item.date) return;
+    const day = item.date;
+    const timestamp = `${day}T08:00:00+05:30`;
+    const values: Partial<WearableReading> = {};
+    if (item.sleep_minutes != null && item.sleep_minutes > 0) values.sleep_hours = Number((item.sleep_minutes / 60).toFixed(1));
+    if (item.steps != null && item.steps > 0 && !hasStepReadingOnDay(readings, day)) {
+      values.steps = item.steps;
+      values.step_mode = "total";
+    }
+    if (item.avg_heart_rate != null && item.avg_heart_rate > 0 && !Array.from(readings.values()).some((reading) => reading.timestamp.startsWith(day) && (reading.heart_rate ?? 0) > 0)) {
+      values.heart_rate = Math.round(item.avg_heart_rate);
+      values.resting_heart_rate = Math.round(item.avg_heart_rate);
+    }
+    if (item.stress_avg_score != null && item.stress_avg_score > 0 && !Array.from(readings.values()).some((reading) => reading.timestamp.startsWith(day) && (reading.stress_score ?? 0) > 0)) {
+      values.stress_score = item.stress_avg_score;
+    }
+    if (Object.keys(values).length) upsertReading(readings, timestamp, values);
+  });
+
+  return Array.from(readings.values())
+    .filter((item) => hasUsefulWearableSignal([item]))
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+}
+
+function deriveWearableAlerts(readings: WearableReading[], latestStepTotal?: { steps: number; timestamp: string; source?: string }): AlertItem[] {
   const sorted = readings.slice().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   const latest = sorted[0];
   const alerts: AlertItem[] = [];
   if (!latest) return alerts;
   const highStress = sorted.find((item) => item.stress_score != null && item.stress_score >= 70);
   const highBpm = sorted.find((item) => (item.heart_rate ?? item.resting_heart_rate ?? 0) >= 100 && (item.active_minutes ?? 0) <= 10);
-  const lowMovement = sorted.find((item) => (item.steps ?? 0) > 0 && (item.steps ?? 0) < 5000);
+  const rawLowMovement = sorted.find((item) => (item.steps ?? 0) > 0 && (item.steps ?? 0) < 5000);
+  const lowMovement = latestStepTotal && latestStepTotal.steps > 0 && latestStepTotal.steps < 5000
+    ? latestStepTotal
+    : undefined;
   const shortSleep = sorted.find((item) => item.sleep_hours != null && item.sleep_hours < 6.5);
 
   if (highStress?.stress_score != null) {
@@ -601,10 +895,20 @@ function deriveWearableAlerts(readings: WearableReading[]): AlertItem[] {
       id: "derived-walk",
       severity: "info",
       title: "Movement is low",
-      message: `Steps are at ${lowMovement.steps}.`,
+      message: `Steps are at ${Math.round(lowMovement.steps)}.`,
       recommended_action: "Take a 10-minute walk if your body feels okay.",
       source: lowMovement.source || "wearable",
       timestamp: lowMovement.timestamp,
+    });
+  } else if (!latestStepTotal && rawLowMovement?.steps != null) {
+    alerts.push({
+      id: "derived-walk",
+      severity: "info",
+      title: "Movement is low",
+      message: `Steps are at ${Math.round(rawLowMovement.steps)}.`,
+      recommended_action: "Take a 10-minute walk if your body feels okay.",
+      source: rawLowMovement.source || "wearable",
+      timestamp: rawLowMovement.timestamp,
     });
   }
   if (shortSleep?.sleep_hours != null) {
@@ -2267,12 +2571,20 @@ function ChartPanel({
   chart = "line",
 }: {
   title: string;
-  data: Array<Record<string, string | number | null>>;
-  dataKey: string;
+  data: WearableChartPoint[];
+  dataKey: keyof Pick<WearableChartPoint, "bpm" | "stress" | "steps" | "sleep">;
   color: string;
   unit?: string;
   chart?: "line" | "area";
 }) {
+  const multiDay = new Set(data.map((item) => dateKey(new Date(item.timestampMs).toISOString()))).size > 1;
+  const hasSeriesData = data.some((item) => typeof item[dataKey] === "number");
+  const onePointPadding = 60 * 60 * 1000;
+  const onlyTimestamp = data[0]?.timestampMs ?? Date.now();
+  const xDomain = data.length <= 1
+    ? [onlyTimestamp - onePointPadding, onlyTimestamp + onePointPadding]
+    : ["dataMin", "dataMax"];
+
   return (
     <div style={{ ...cardStyle, padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
@@ -2280,12 +2592,24 @@ function ChartPanel({
         {unit ? <div style={{ color: COLORS.textMuted, fontSize: 11, fontWeight: 800 }}>{unit}</div> : null}
       </div>
       <div style={{ width: "100%", height: 170 }}>
-        <ResponsiveContainer>
+        {hasSeriesData ? <ResponsiveContainer>
           {chart === "area" ? (
             <AreaChart data={data}>
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} />
-              <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={32} />
+              <XAxis
+                dataKey="timestampMs"
+                type="number"
+                scale="time"
+                domain={xDomain}
+                stroke={COLORS.textMuted}
+                fontSize={10}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(value) => wearableTickLabel(value, multiDay)}
+                allowDecimals={false}
+                minTickGap={18}
+              />
+              <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={dataKey === "steps" ? 48 : 34} />
               <Tooltip
                 labelFormatter={(_, payload) => payload?.[0]?.payload?.tooltipTime || ""}
                 contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }}
@@ -2295,8 +2619,20 @@ function ChartPanel({
           ) : (
             <LineChart data={data}>
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
-              <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} />
-              <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={32} />
+              <XAxis
+                dataKey="timestampMs"
+                type="number"
+                scale="time"
+                domain={xDomain}
+                stroke={COLORS.textMuted}
+                fontSize={10}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(value) => wearableTickLabel(value, multiDay)}
+                allowDecimals={false}
+                minTickGap={18}
+              />
+              <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={dataKey === "steps" ? 48 : 34} />
               <Tooltip
                 labelFormatter={(_, payload) => payload?.[0]?.payload?.tooltipTime || ""}
                 contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }}
@@ -2304,7 +2640,11 @@ function ChartPanel({
               <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2.5} dot={false} connectNulls />
             </LineChart>
           )}
-        </ResponsiveContainer>
+        </ResponsiveContainer> : (
+          <div style={{ height: "100%", display: "grid", placeItems: "center", color: COLORS.textMuted, fontSize: 12, fontWeight: 800 }}>
+            No {title.toLowerCase()} samples
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2343,6 +2683,7 @@ function AlertsTab() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [demoExpanded, setDemoExpanded] = useState(false);
+  const intakeSleepHours = numberFromDraft(loadIntakeForm()?.sleepHours);
 
   useEffect(() => {
     let cancelled = false;
@@ -2366,7 +2707,28 @@ function AlertsTab() {
         const summariesPayload = summariesResponse.ok
           ? (await summariesResponse.json()) as { summaries?: HealthDailySummary[] }
           : { summaries: [] };
-        const fallbackReadings = dailySummariesToWearableReadings((summariesPayload.summaries || []).slice(-60));
+        const cachedDailyHealth = loadCachedSamsungDailyHealth();
+        const summaries = (cachedDailyHealth.length ? cachedDailyHealth : summariesPayload.summaries || []).slice(-60);
+        const displayDay = latestDateKey([
+          ...summaries.map((item) => item.date),
+          ...wearablePayload.map((item) => item.timestamp),
+        ]);
+        const detailQuery = dayWindowParams(displayDay);
+        const [heartRateResponse, stepsResponse, stressResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/api/health/users/${userId}/heart-rate?${detailQuery}`),
+          fetch(`${API_BASE_URL}/api/health/users/${userId}/steps?${detailQuery}`),
+          fetch(`${API_BASE_URL}/api/health/users/${userId}/stress?${detailQuery}`),
+        ]);
+        const dailyReadings = withSleepFallback(dailySummariesToWearableReadings(summaries), intakeSleepHours);
+        const detailReadings = withSleepFallback(samsungDetailsToWearableReadings(
+          heartRateResponse.ok ? ((await heartRateResponse.json()) as HealthHeartRateDetail) : {},
+          stepsResponse.ok ? ((await stepsResponse.json()) as HealthStepDetail) : {},
+          stressResponse.ok ? ((await stressResponse.json()) as HealthStressDetail) : {},
+          summaries,
+        ), intakeSleepHours);
+        const fallbackReadings = hasUsefulWearableSignal(detailReadings)
+          ? detailReadings
+          : dailyReadings;
         const alertPayload = alertsResponse.ok ? (await alertsResponse.json()) as Array<{
           id: string;
           severity: AlertItem["severity"];
@@ -2377,7 +2739,8 @@ function AlertsTab() {
           created_at?: string;
         }> : [];
         if (cancelled) return;
-        setReadings(wearablePayload.length ? wearablePayload : fallbackReadings);
+        const wearableWithSleep = withSleepFallback(wearablePayload, intakeSleepHours);
+        setReadings(hasUsefulWearableSignal(fallbackReadings) ? fallbackReadings : wearableWithSleep);
         setBackendAlerts(
           alertPayload.map((item) => ({
             id: item.id,
@@ -2403,10 +2766,18 @@ function AlertsTab() {
   }, []);
 
   const chartData = wearableChartData(readings);
-  const derivedAlerts = deriveWearableAlerts(readings);
+  const latestStepPoint = latestSeriesPoint(chartData, "steps");
+  const latestStepTotal = latestStepPoint?.steps != null
+    ? {
+        steps: latestStepPoint.steps,
+        timestamp: new Date(latestStepPoint.timestampMs).toISOString(),
+        source: "samsung health",
+      }
+    : undefined;
+  const derivedAlerts = deriveWearableAlerts(readings, latestStepTotal);
   const allAlerts = [...derivedAlerts, ...backendAlerts].slice(0, 8);
   const latest = readings.slice().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-  const demoData = wearableChartData(SYNTHETIC_WATCH_DEMO, false);
+  const demoData = wearableChartData(SYNTHETIC_WATCH_DEMO);
   const demoAlerts = deriveSyntheticAlerts(SYNTHETIC_WATCH_DEMO);
 
   return (
@@ -2439,7 +2810,7 @@ function AlertsTab() {
           <div className="lt-grid-cards" style={{ marginBottom: 20 }}>
             <MetricCard icon={<HeartPulse size={21} />} label="Latest BPM" value={latest?.heart_rate ?? latest?.resting_heart_rate ?? "--"} percent={latest?.heart_rate ? lowerIsBetterPercent(latest.heart_rate, 70, 120) : undefined} color={COLORS.red} />
             <MetricCard icon={<Wind size={21} />} label="Stress" value={latest?.stress_score != null ? Math.round(latest.stress_score) : "--"} percent={latest?.stress_score != null ? lowerIsBetterPercent(latest.stress_score, 35, 100) : undefined} color={COLORS.gold} />
-            <MetricCard icon={<Activity size={21} />} label="Steps" value={latest?.steps ?? "--"} percent={latest?.steps != null ? higherIsBetterPercent(latest.steps, 10000) : undefined} color={COLORS.accent} />
+            <MetricCard icon={<Activity size={21} />} label="Steps" value={latestStepTotal ? Math.round(latestStepTotal.steps) : "--"} percent={latestStepTotal ? higherIsBetterPercent(latestStepTotal.steps, 10000) : undefined} color={COLORS.accent} />
           </div>
 
           <div className="lt-grid-two" style={{ alignItems: "start", marginBottom: 22 }}>

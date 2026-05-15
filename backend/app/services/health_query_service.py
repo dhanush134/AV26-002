@@ -102,19 +102,21 @@ class HealthQueryService:
             interval_stmt = interval_stmt.where(HealthStepInterval.start_time <= to_time)
             trend_stmt = trend_stmt.where(HealthStepTrendSample.sample_time <= to_time)
         intervals = list(db.scalars(interval_stmt.order_by(HealthStepInterval.start_time).limit(limit)))
+        daily_summaries = list(
+            db.scalars(
+                select(HealthStepDailySummary)
+                .where(HealthStepDailySummary.user_id == user_id)
+                .order_by(HealthStepDailySummary.date.desc())
+                .limit(limit)
+            )
+        )
+        trend_samples = list(db.scalars(trend_stmt.order_by(HealthStepTrendSample.sample_time).limit(limit)))
         return {
             "intervals": [self._row_dict(row) for row in intervals],
-            "daily_summaries": [
-                self._row_dict(row)
-                for row in db.scalars(
-                    select(HealthStepDailySummary)
-                    .where(HealthStepDailySummary.user_id == user_id)
-                    .order_by(HealthStepDailySummary.date.desc())
-                    .limit(limit)
-                )
-            ],
-            "trend_samples": [self._row_dict(row) for row in db.scalars(trend_stmt.order_by(HealthStepTrendSample.sample_time).limit(limit))],
-            "hourly_aggregates": self._hourly_steps(intervals),
+            "daily_summaries": [self._row_dict(row) for row in daily_summaries],
+            "trend_samples": [self._row_dict(row) for row in trend_samples],
+            "hourly_aggregates": self._hourly_steps(intervals, trend_samples),
+            "daily_aggregates": self._daily_steps(intervals, trend_samples, daily_summaries),
         }
 
     def stress_detail(
@@ -204,13 +206,33 @@ class HealthQueryService:
                 buckets.setdefault(key, []).append(row.bpm)
         return [{"hour": hour, "avg_bpm": round(sum(values) / len(values), 2), "sample_count": len(values)} for hour, values in sorted(buckets.items())]
 
-    def _hourly_steps(self, rows: list[HealthStepInterval]) -> list[dict]:
+    def _hourly_steps(self, intervals: list[HealthStepInterval], trend_samples: list[HealthStepTrendSample]) -> list[dict]:
         buckets: dict[str, int] = {}
+        rows = intervals if intervals else trend_samples
         for row in rows:
-            if row.start_time:
-                key = row.start_time.replace(minute=0, second=0, microsecond=0).isoformat()
+            row_time = getattr(row, "start_time", None) or getattr(row, "sample_time", None)
+            if row_time:
+                key = row_time.replace(minute=0, second=0, microsecond=0).isoformat()
                 buckets[key] = buckets.get(key, 0) + (row.steps or 0)
         return [{"hour": hour, "steps": steps} for hour, steps in sorted(buckets.items())]
+
+    def _daily_steps(
+        self,
+        intervals: list[HealthStepInterval],
+        trend_samples: list[HealthStepTrendSample],
+        summaries: list[HealthStepDailySummary],
+    ) -> list[dict]:
+        buckets: dict[str, int] = {}
+        rows = intervals if intervals else trend_samples
+        for row in rows:
+            row_time = getattr(row, "start_time", None) or getattr(row, "sample_time", None)
+            if row_time:
+                key = row_time.date().isoformat()
+                buckets[key] = buckets.get(key, 0) + (row.steps or 0)
+        for row in summaries:
+            if row.date and row.date.isoformat() not in buckets:
+                buckets[row.date.isoformat()] = row.step_count or 0
+        return [{"date": day, "steps": steps} for day, steps in sorted(buckets.items())]
 
     def _hourly_stress(self, rows: list[HealthStressSample]) -> list[dict]:
         buckets: dict[str, list[float]] = {}

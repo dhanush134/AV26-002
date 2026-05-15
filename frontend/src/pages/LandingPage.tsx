@@ -19,6 +19,7 @@ const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
 const ADAPTIVE_PLAN_PENDING_STORAGE_KEY = "lifetwin_adaptive_plan_pending_v1";
 const ADAPTIVE_PLAN_UPDATED_EVENT = "lifetwin-adaptive-plan-updated";
+const SAMSUNG_DAILY_HEALTH_STORAGE_KEY = "lifetwin_samsung_daily_health_v1";
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 function optionalNumber(value: string) {
@@ -91,6 +92,7 @@ type ExtractedField = {
 };
 
 type SamsungDailyHealth = {
+  date?: string | null;
   steps?: number | null;
   active_time_seconds?: number | null;
   exercise_time_seconds?: number | null;
@@ -510,6 +512,7 @@ export function LandingPage() {
       localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
       localStorage.removeItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
+      localStorage.removeItem(SAMSUNG_DAILY_HEALTH_STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_PLAN_PENDING_STORAGE_KEY);
       window.dispatchEvent(new Event(ADAPTIVE_PLAN_UPDATED_EVENT));
       setForm(defaultForm);
@@ -543,6 +546,9 @@ export function LandingPage() {
         throw new Error(errorText || "Samsung Health import failed.");
       }
       const payload = (await response.json()) as SamsungUploadResponse;
+      if (payload.daily_health?.length) {
+        localStorage.setItem(SAMSUNG_DAILY_HEALTH_STORAGE_KEY, JSON.stringify(payload.daily_health));
+      }
       const latestDay = latestDailyHealth(payload.daily_health);
       const heightMeasurement = latestMeasurement(payload.body_profile?.measurements, (item) => typeof item.height_cm === "number");
       const weightMeasurement = latestMeasurement(payload.body_profile?.measurements, (item) => typeof item.weight_kg === "number");
