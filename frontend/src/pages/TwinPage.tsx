@@ -626,6 +626,10 @@ export function TwinPage() {
   ]);
 
   useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [activeTab]);
+
+  useEffect(() => {
     if (routinePlan?.activities.length) {
       setRoutine(activitiesToRoutine(routinePlan.activities));
     }
