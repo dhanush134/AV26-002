@@ -2673,6 +2673,7 @@ function AlertsTab() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [demoExpanded, setDemoExpanded] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
   const intakeSleepHours = numberFromDraft(loadIntakeForm()?.sleepHours);
 
   useEffect(() => {
@@ -2753,7 +2754,7 @@ function AlertsTab() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshToken, intakeSleepHours]);
 
   const chartData = wearableChartData(readings);
   const latestStepPoint = latestSeriesPoint(chartData, "steps");
@@ -2779,8 +2780,8 @@ function AlertsTab() {
             Smartwatch readings mapped into break, breath, walk, recovery, and safety alerts.
           </p>
         </div>
-        <GhostButton onClick={() => window.location.reload()}>
-          <RefreshCw size={15} /> Refresh
+        <GhostButton onClick={() => setRefreshToken((current) => current + 1)} disabled={loading}>
+          <RefreshCw size={15} /> {loading ? "Refreshing..." : "Refresh"}
         </GhostButton>
       </div>
 
