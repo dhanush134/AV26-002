@@ -387,6 +387,13 @@ function lowerIsBetterPercent(value: number, ideal: number, max: number) {
   return clampPercent(100 - ((value - ideal) / (max - ideal)) * 100);
 }
 
+function calculateBmi(heightCm?: number, weightKg?: number) {
+  if (!heightCm || !weightKg) return undefined;
+  const heightM = heightCm / 100;
+  if (heightM <= 0) return undefined;
+  return Number((weightKg / (heightM * heightM)).toFixed(1));
+}
+
 const NEGATIVE_LABELS: Record<NegativeChoice, string> = {
   alcohol: "Alcohol",
   smoking: "Smoking",
@@ -732,9 +739,7 @@ export function TwinPage() {
         <NutritionTab age={age} supplements={supplements} nutrition={nutritionPlan?.nutrition} plan={nutritionPlan} loading={nutritionLoading} />
       ) : null}
 
-      {activeTab === "twin" ? (
-        <TwinTab age={age} targetAge={targetAge} bioAge={bioAge} twinAge={twinAge} clampedScore={clampedScore} />
-      ) : null}
+      {activeTab === "twin" ? <TwinTab clampedScore={clampedScore} routinePlan={routinePlan} /> : null}
 
     </div>
   );
@@ -948,82 +953,56 @@ function BloodPressureInput({
   );
 }
 
-function TwinOrb({
-  age,
+function HumanBmiOutline({
   label,
+  bmi,
   color,
-  size = 120,
-  animated = false,
+  ideal = false,
 }: {
-  age: number;
   label: string;
+  bmi?: number;
   color: string;
-  size?: number;
-  animated?: boolean;
+  ideal?: boolean;
 }) {
-  const orbiters = [HeartPulse, Dna, Activity, Sparkles];
+  const safeBmi = bmi ?? 23;
+  const widthScale = Math.max(0.82, Math.min(1.34, safeBmi / 23));
+  const shoulderWidth = 44 * widthScale;
+  const waistWidth = 34 * widthScale;
+  const hipWidth = 40 * widthScale;
+  const center = 80;
+  const bodyPath = [
+    `M ${center - shoulderWidth / 2} 48`,
+    `C ${center - shoulderWidth / 2 - 10} 64 ${center - waistWidth / 2 - 6} 88 ${center - waistWidth / 2} 104`,
+    `C ${center - hipWidth / 2} 126 ${center - 22 * widthScale} 146 ${center - 17 * widthScale} 172`,
+    `L ${center - 8 * widthScale} 172`,
+    `C ${center - 8 * widthScale} 140 ${center - 4 * widthScale} 122 ${center} 112`,
+    `C ${center + 4 * widthScale} 122 ${center + 8 * widthScale} 140 ${center + 8 * widthScale} 172`,
+    `L ${center + 17 * widthScale} 172`,
+    `C ${center + 22 * widthScale} 146 ${center + hipWidth / 2} 126 ${center + waistWidth / 2} 104`,
+    `C ${center + waistWidth / 2 + 6} 88 ${center + shoulderWidth / 2 + 10} 64 ${center + shoulderWidth / 2} 48`,
+  ].join(" ");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-      <div style={{ position: "relative", width: size, height: size }}>
-        <div
-          style={{
-            width: size,
-            height: size,
-            borderRadius: "50%",
-            background: `radial-gradient(circle at 35% 35%, ${color}55, ${color}11)`,
-            border: `2px solid ${color}66`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexDirection: "column",
-            animation: animated ? "pulse-ring 3s ease-in-out infinite, float 4s ease-in-out infinite" : "float 6s ease-in-out infinite",
-            boxShadow: `0 0 40px ${color}33, inset 0 0 30px ${color}11`,
-            position: "relative",
-            overflow: "hidden",
-          }}
-        >
-          {animated ? (
-            <div
-              style={{
-                position: "absolute",
-                left: 0,
-                right: 0,
-                height: 1,
-                background: `linear-gradient(90deg, transparent, ${color}AA, transparent)`,
-                animation: "scan 2s linear infinite",
-                top: 0,
-              }}
-            />
-          ) : null}
-          <div style={{ fontSize: size * 0.22, fontWeight: 950, color, lineHeight: 1 }}>{age}</div>
-          <div style={{ fontSize: size * 0.08, color: color + "99", fontWeight: 800, letterSpacing: 2, textTransform: "uppercase" }}>
-            YRS
-          </div>
-        </div>
-        {animated
-          ? orbiters.map((Icon, index) => (
-              <div
-                key={index}
-                style={{
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  marginLeft: -8,
-                  marginTop: -8,
-                  animation: `orbit ${3 + index * 0.5}s linear infinite`,
-                  animationDelay: `${index * 0.7}s`,
-                  opacity: 0.75,
-                  color,
-                }}
-              >
-                <Icon size={16} />
-              </div>
-            ))
-          : null}
+      <div style={{ ...cardStyle, width: 190, height: 240, display: "grid", placeItems: "center", borderColor: `${color}55`, boxShadow: ideal ? `0 0 34px ${color}22` : "none" }}>
+        <svg width={150} height={205} viewBox="0 0 160 205" role="img" aria-label={`${label} BMI outline`}>
+          <defs>
+            <linearGradient id={`bodyFill-${ideal ? "ideal" : "current"}`} x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor={`${color}44`} />
+              <stop offset="100%" stopColor={`${color}08`} />
+            </linearGradient>
+          </defs>
+          <circle cx={80} cy={27} r={17} fill={`${color}18`} stroke={color} strokeWidth={2.4} />
+          <path d={bodyPath} fill={`url(#bodyFill-${ideal ? "ideal" : "current"})`} stroke={color} strokeWidth={2.8} strokeLinejoin="round" />
+          <path d={`M ${center - shoulderWidth / 2} 54 C 42 72 36 88 33 108`} fill="none" stroke={`${color}AA`} strokeWidth={2.2} strokeLinecap="round" />
+          <path d={`M ${center + shoulderWidth / 2} 54 C 118 72 124 88 127 108`} fill="none" stroke={`${color}AA`} strokeWidth={2.2} strokeLinecap="round" />
+          <path d={`M ${center - 9 * widthScale} 171 L ${center - 11 * widthScale} 196`} stroke={`${color}AA`} strokeWidth={2.2} strokeLinecap="round" />
+          <path d={`M ${center + 9 * widthScale} 171 L ${center + 11 * widthScale} 196`} stroke={`${color}AA`} strokeWidth={2.2} strokeLinecap="round" />
+        </svg>
       </div>
       <div style={{ textAlign: "center" }}>
         <div style={{ color: COLORS.textPrimary, fontWeight: 800, fontSize: 14 }}>{label}</div>
+        <div style={{ color, fontSize: 12, fontWeight: 900, marginTop: 4 }}>BMI {safeBmi.toFixed(1)}</div>
       </div>
     </div>
   );
@@ -1962,36 +1941,22 @@ function NutritionTab({
   );
 }
 
-function TwinTab({
-  age,
-  targetAge,
-  bioAge,
-  twinAge,
-  clampedScore,
-}: {
-  age: number;
-  targetAge: number;
-  bioAge: number;
-  twinAge: number;
-  clampedScore: number;
-}) {
-  const gaps = [
-    { label: "Cardiovascular", current: 62, ideal: 95, icon: <HeartPulse size={22} /> },
-    { label: "Metabolic", current: 71, ideal: 92, icon: <Zap size={22} /> },
-    { label: "Cellular Aging", current: 55, ideal: 88, icon: <Dna size={22} /> },
-    { label: "Sleep Quality", current: 58, ideal: 95, icon: <Moon size={22} /> },
-    { label: "Inflammation", current: 68, ideal: 90, icon: <Activity size={22} /> },
-    { label: "Movement", current: 74, ideal: 91, icon: <Dumbbell size={22} /> },
-  ];
+function TwinTab({ clampedScore, routinePlan }: { clampedScore: number; routinePlan: RoutinePlanResponse | null }) {
+  const timelineText = routinePlan
+    ? `${routinePlan.timeline.estimated_weeks} weeks · ${routinePlan.timeline.confidence} confidence`
+    : "Timeline appears after your routine plan is generated";
+  const form = loadIntakeForm();
+  const currentBmi = calculateBmi(numberFromDraft(form?.height), numberFromDraft(form?.weight));
+  const idealBmi = 23;
 
   return (
-    <div className="lt-page" style={{ maxWidth: 1040 }}>
+    <div className="lt-page" style={{ maxWidth: 920 }}>
       <div style={{ textAlign: "center", marginBottom: 48 }}>
         <div style={{ fontSize: 11, letterSpacing: 3, color: COLORS.accent, textTransform: "uppercase", fontWeight: 900, marginBottom: 12 }}>
-          Your Digital Twin System
+          Ideal Twin
         </div>
         <h1 style={{ fontSize: 44, fontWeight: 950, letterSpacing: -2, lineHeight: 1.1, margin: 0 }}>
-          Meet your{" "}
+          You today vs{" "}
           <span
             style={{
               background: `linear-gradient(135deg, ${COLORS.accent}, ${COLORS.purple})`,
@@ -1999,55 +1964,53 @@ function TwinTab({
               WebkitTextFillColor: "transparent",
             }}
           >
-            future self
+            ideal you
           </span>
         </h1>
         <p style={{ color: COLORS.textSecondary, marginTop: 12, fontSize: 16 }}>
-          Mock longevity interface based on the PDF format: current self, ideal twin, and gap closure.
+          A simple view of where your current plan stands against the ideal routine, nutrition, recovery, and consistency state.
         </p>
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 60, marginBottom: 48, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 60, marginBottom: 34, flexWrap: "wrap" }}>
         <div style={{ textAlign: "center" }}>
-          <TwinOrb age={age} label="You Today" color={COLORS.blue} size={140} />
-          <div style={{ marginTop: 12, color: COLORS.textMuted, fontSize: 12 }}>Biological age: {bioAge}</div>
+          <HumanBmiOutline label="You Today" bmi={currentBmi} color={COLORS.blue} />
         </div>
-        <div style={{ textAlign: "center", width: 180 }}>
+        <div style={{ textAlign: "center", width: 220 }}>
           <div style={{ fontSize: 42, fontWeight: 950, color: COLORS.accent }}>{clampedScore}%</div>
-          <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4, marginBottom: 10 }}>Match to ideal</div>
+          <div style={{ color: COLORS.textMuted, fontSize: 12, marginTop: 4, marginBottom: 10 }}>Current progress to ideal</div>
           <ProgressBar value={clampedScore} color={COLORS.accent} height={4} />
-          <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            {["Sleep", "Diet", "Movement"].map((item) => (
-              <span key={item} style={{ fontSize: 10, color: COLORS.textMuted }}>
-                {"->"} {item}
-              </span>
-            ))}
-          </div>
+          <div style={{ color: COLORS.gold, fontSize: 12, fontWeight: 800, marginTop: 12 }}>{timelineText}</div>
+          {routinePlan?.timeline.summary ? (
+            <div style={{ color: COLORS.textMuted, fontSize: 11, lineHeight: 1.5, marginTop: 8 }}>{routinePlan.timeline.summary}</div>
+          ) : null}
         </div>
         <div style={{ textAlign: "center" }}>
-          <TwinOrb age={targetAge} label={`Ideal You at ${targetAge}`} color={COLORS.accent} size={140} animated />
-          <div style={{ marginTop: 12, color: COLORS.accent, fontSize: 12 }}>Projected bio age: {twinAge}</div>
+          <HumanBmiOutline label="Ideal You" bmi={idealBmi} color={COLORS.accent} ideal />
         </div>
       </div>
 
-      <div className="lt-grid-cards">
-        {gaps.map((gap) => (
-          <div key={gap.label} style={{ ...cardStyle, padding: 20 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <div style={{ color: COLORS.purple }}>{gap.icon}</div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontSize: 20, fontWeight: 950, color: COLORS.accent }}>{gap.ideal}%</div>
-                <div style={{ fontSize: 10, color: COLORS.textMuted }}>ideal</div>
-              </div>
+      <div style={{ ...cardStyle, borderRadius: 20, padding: 24 }}>
+        <SectionLabel color={COLORS.accent}>Focus Path</SectionLabel>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14 }}>
+          {[
+            { label: "Routine", text: "Complete today's checklist consistently." },
+            { label: "Nutrition", text: "Follow the composition plan without making meals rigid." },
+            { label: "Recovery", text: "Protect sleep, stress control, and daily movement." },
+          ].map((item) => (
+            <div key={item.label} style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 16 }}>
+              <div style={{ color: COLORS.textPrimary, fontWeight: 900, fontSize: 14 }}>{item.label}</div>
+              <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.6, marginTop: 6 }}>{item.text}</div>
             </div>
-            <div style={{ color: COLORS.textPrimary, fontWeight: 800, fontSize: 13, marginBottom: 8 }}>{gap.label}</div>
-            <ProgressBar value={gap.current} color={COLORS.purple} height={4} />
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-              <span style={{ fontSize: 10, color: COLORS.textMuted }}>Now: {gap.current}%</span>
-              <span style={{ fontSize: 10, color: COLORS.textMuted }}>Gap: {gap.ideal - gap.current}%</span>
-            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ color: COLORS.textSecondary, fontSize: 12, fontWeight: 800 }}>Overall progress</span>
+            <span style={{ color: COLORS.accent, fontSize: 12, fontWeight: 900 }}>{clampedScore}%</span>
           </div>
-        ))}
+          <ProgressBar value={clampedScore} color={COLORS.accent} height={6} />
+        </div>
       </div>
     </div>
   );
