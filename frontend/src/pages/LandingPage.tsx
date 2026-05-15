@@ -13,6 +13,7 @@ import { Card } from "../components/ui/Card";
 
 const STORAGE_KEY = "lifetwin_intake_draft_v1";
 const USER_STORAGE_KEY = "lifetwin_intake_user_id_v1";
+const WEARABLE_FETCHED_STORAGE_KEY = "lifetwin_wearable_fetched_v1";
 const ADAPTIVE_ROUTINE_STORAGE_KEY = "lifetwin_adaptive_routine_v1";
 const ADAPTIVE_NUTRITION_STORAGE_KEY = "lifetwin_adaptive_nutrition_v1";
 const BIOMARKER_ANALYSIS_STORAGE_KEY = "lifetwin_biomarker_analysis_v1";
@@ -201,31 +202,14 @@ const defaultForm: IntakeForm = {
 };
 
 const manualFieldCount = [
-  "fullName",
   "currentAge",
   "height",
   "weight",
-  "bodyComposition",
-  "pulseRate",
-  "stress",
-  "activity",
-  "exercise",
   "bpSystolic",
   "bpDiastolic",
   "hba1c",
-  "dailySteps",
-  "fastingBloodSugar",
-  "lft",
-  "rft",
-  "lipidProfile",
   "vitaminD",
   "vitaminB12",
-  "ironFerritin",
-  "magnesium",
-  "sleepHours",
-  "tsh",
-  "cortisol",
-  "testosterone",
 ] as const;
 
 function decodeFileToText(file: File) {
@@ -348,6 +332,7 @@ export function LandingPage() {
   const [form, setForm] = useState<IntakeForm>(defaultForm);
   const [wearableMessage, setWearableMessage] = useState("");
   const [wearableLoading, setWearableLoading] = useState(false);
+  const [wearableFetched, setWearableFetched] = useState(() => localStorage.getItem(WEARABLE_FETCHED_STORAGE_KEY) === "true");
   const [reportMessage, setReportMessage] = useState("");
   const [reportName, setReportName] = useState("");
   const [bloodDetailsMessage, setBloodDetailsMessage] = useState("");
@@ -428,10 +413,11 @@ export function LandingPage() {
   }, []);
 
   const filledManualFields = manualFieldCount.filter((key) => String(form[key]).trim().length > 0).length;
-  const completion = Math.round((filledManualFields / manualFieldCount.length) * 100);
+  const manualCompletion = manualFieldCount.length ? (filledManualFields / manualFieldCount.length) * 50 : 0;
+  const completion = Math.round((wearableFetched ? 50 : 0) + manualCompletion);
   const hasRequiredBmiMetrics = [form.currentAge, form.height, form.weight].every((value) => value.trim().length > 0);
   const hasPartialBp = [form.bpSystolic, form.bpDiastolic].filter((value) => value.trim().length > 0).length === 1;
-  const canSubmitDetails = hasRequiredBmiMetrics && !hasPartialBp;
+  const canSubmitDetails = wearableFetched && hasRequiredBmiMetrics && !hasPartialBp;
 
   const updateField = <K extends keyof IntakeForm>(key: K, value: IntakeForm[K]) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -508,10 +494,12 @@ export function LandingPage() {
       }
       localStorage.removeItem(USER_STORAGE_KEY);
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(WEARABLE_FETCHED_STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_ROUTINE_STORAGE_KEY);
       localStorage.removeItem(ADAPTIVE_NUTRITION_STORAGE_KEY);
       localStorage.removeItem(BIOMARKER_ANALYSIS_STORAGE_KEY);
       setForm(defaultForm);
+      setWearableFetched(false);
       setReportName("");
       setExtractedFields([]);
       setBloodDetailsMessage("User data cleared. You can start fresh.");
@@ -524,7 +512,7 @@ export function LandingPage() {
 
   const connectWearable = async () => {
     setWearableLoading(true);
-    setWearableMessage("Reading C:\\Users\\dhanu\\Downloads\\Data.zip through the backend and syncing Samsung Health data...");
+    setWearableMessage("Syncing Samsung Health wearable data...");
     try {
       const userId = await getOrCreateIntakeUser(form);
       const params = new URLSearchParams({
@@ -574,11 +562,13 @@ export function LandingPage() {
       const savedCounts = payload.storage?.saved_counts || {};
       const savedTotal = Object.values(savedCounts).reduce((sum, count) => sum + count, 0);
       const storageText = payload.storage?.already_imported
-        ? "This ZIP was already imported, so existing stored records were reused."
-        : `Stored ${savedTotal} normalized records and updated ${payload.storage?.daily_summaries_updated || 0} daily summaries.`;
+        ? "Wearable data was already synced, so existing records were reused."
+        : `Synced ${savedTotal} wearable records and updated ${payload.storage?.daily_summaries_updated || 0} daily summaries.`;
       setWearableMessage(
         `${storageText} Manual intake was filled from Samsung Health fields: pulse, stress, activity, exercise, steps, sleep if available, height, weight, and body composition.`,
       );
+      localStorage.setItem(WEARABLE_FETCHED_STORAGE_KEY, "true");
+      setWearableFetched(true);
     } catch (error) {
       setWearableMessage(error instanceof Error ? error.message : "Samsung Health wearable sync failed.");
     } finally {
@@ -703,8 +693,7 @@ export function LandingPage() {
                   </div>
                 </div>
 
-                <div className="hidden gap-2 sm:grid sm:grid-cols-3 lg:min-w-72 lg:grid-cols-1">
-                  <SummaryChip icon={<HeartPulse size={17} className="text-rose-200" />} label="Biomarkers" value="20+" />
+                <div className="hidden gap-2 sm:grid sm:grid-cols-2 lg:min-w-72 lg:grid-cols-1">
                   <SummaryChip icon={<Watch size={17} className="text-cyan-200" />} label="Wearables" value="Auto-fill" />
                   <SummaryChip icon={<BrainCircuit size={17} className="text-emerald-200" />} label="Reports" value="AI assisted" />
                 </div>
@@ -766,6 +755,8 @@ export function LandingPage() {
                 <Button type="submit" disabled={!canSubmitDetails || aiPreloading}>
                   {aiPreloading ? "Generating AI plan..." : "Submit details"}
                 </Button>
+                {!wearableFetched ? <span className="text-sm font-medium text-cyan-100">Fetch wearable data first.</span> : null}
+                {wearableFetched && !hasRequiredBmiMetrics ? <span className="text-sm font-medium text-amber-100">Age, weight, and height are required.</span> : null}
                 {hasPartialBp ? <span className="text-sm font-medium text-amber-100">Enter both BP values or leave both empty.</span> : null}
                 {bloodDetailsMessage ? <span className="text-sm font-medium text-emerald-100">{bloodDetailsMessage}</span> : null}
               </div>
