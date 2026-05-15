@@ -1905,7 +1905,7 @@ function RoutineTab({
 
   return (
     <div className="lt-page">
-      <div className="lt-grid-two">
+      <div>
         <div>
           <div style={{ marginBottom: 24 }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
@@ -2015,9 +2015,9 @@ function RoutineTab({
               </PrimaryButton>
             </div>
           </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <ScoreRing score={taskCompletionScore} doneCount={doneCount} total={routine.length} />
+          <div style={{ marginTop: 18 }}>
+            <ScoreRing score={taskCompletionScore} doneCount={doneCount} total={routine.length} />
+          </div>
         </div>
       </div>
     </div>
