@@ -460,12 +460,28 @@ function readingTimeLabel(timestamp: string) {
   return new Date(timestamp).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function wearableChartData(readings: WearableReading[]) {
-  return readings
-    .slice()
-    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
-    .map((item) => ({
-      time: readingTimeLabel(item.timestamp),
+function readingDateLabel(timestamp: string) {
+  return new Date(timestamp).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function readingDateTimeLabel(timestamp: string) {
+  const date = new Date(timestamp);
+  return `${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })} ${date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
+function wearableChartData(readings: WearableReading[], preferDateLabels = false) {
+  const sorted = readings.slice().sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const uniqueTimeLabels = new Set(sorted.map((item) => readingTimeLabel(item.timestamp))).size;
+  const useDateLabels = preferDateLabels || (sorted.length > 1 && uniqueTimeLabels <= Math.ceil(sorted.length * 0.35));
+
+  return sorted
+    .map((item, index) => ({
+      time: useDateLabels ? readingDateLabel(item.timestamp) : readingTimeLabel(item.timestamp),
+      tooltipTime: readingDateTimeLabel(item.timestamp),
+      point: index + 1,
       bpm: item.heart_rate ?? item.resting_heart_rate ?? null,
       stress: item.stress_score ?? null,
       steps: item.steps ?? null,
@@ -2215,7 +2231,10 @@ function ChartPanel({
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} />
               <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={32} />
-              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }} />
+              <Tooltip
+                labelFormatter={(_, payload) => payload?.[0]?.payload?.tooltipTime || ""}
+                contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }}
+              />
               <Area type="monotone" dataKey={dataKey} stroke={color} fill={`${color}33`} strokeWidth={2.5} connectNulls />
             </AreaChart>
           ) : (
@@ -2223,7 +2242,10 @@ function ChartPanel({
               <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="time" stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} />
               <YAxis stroke={COLORS.textMuted} fontSize={10} tickLine={false} axisLine={false} width={32} />
-              <Tooltip contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }} />
+              <Tooltip
+                labelFormatter={(_, payload) => payload?.[0]?.payload?.tooltipTime || ""}
+                contentStyle={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, color: COLORS.textPrimary }}
+              />
               <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2.5} dot={false} connectNulls />
             </LineChart>
           )}
@@ -2324,7 +2346,7 @@ function AlertsTab() {
   const derivedAlerts = deriveWearableAlerts(readings);
   const allAlerts = [...derivedAlerts, ...backendAlerts].slice(0, 8);
   const latest = readings.slice().sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
-  const demoData = wearableChartData(SYNTHETIC_WATCH_DEMO);
+  const demoData = wearableChartData(SYNTHETIC_WATCH_DEMO, false);
   const demoAlerts = deriveSyntheticAlerts(SYNTHETIC_WATCH_DEMO);
 
   return (
